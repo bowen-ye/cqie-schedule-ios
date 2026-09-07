@@ -1,0 +1,22 @@
+# ===== 不入库: 体积/密钥/内网路径 =====
+
+# 构建工具链与产物(几 GB, 且与账号无关)
+toolchain/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+
+# Python 缓存/预览图
+__pycache__/
+*.pyc
+prototype/preview/
+
+# 本机开发用(内网路径 + 代登录代理 + 校验脚本), 非公开产品文件
+prototype/server.py
+prototype/mob_check.py
+prototype/layout_check.py
+
+# 本机安装/测试说明(含本人学号, 仅本地使用, 不入库)
+docs/APK安装与测试.md

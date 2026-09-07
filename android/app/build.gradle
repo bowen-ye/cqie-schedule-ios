@@ -1,0 +1,42 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'cn.cqie.kebiao'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "cn.cqie.kebiao"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "0.1.0"
+    }
+
+    buildTypes {
+        debug {
+            // debug 保持原样, 便于 chrome://inspect 真机调 JS
+        }
+        release {
+            // R8 裁剪 + 资源收缩, 把 APK 狠狠压小(占用存储最小化)
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // 个人分发不折腾正式签名: 沿用 debug 签名, 也能直接覆盖安装旧 debug 包
+            signingConfig signingConfigs.debug
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+
+dependencies {
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+}

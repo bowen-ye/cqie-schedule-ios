@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>教务课表</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <h1>教务课表</h1>
+    <button id="acctBtn" class="iconbtn" title="我的账号 / 退出登录 / 清理本地数据">👤</button>
+    <span class="badge">Web 原型 · 只读</span>
+    <span class="acct" id="acct">登录中…</span>
+  </div>
+  <div class="controls">
+    <label class="ctl" id="semCtl">
+      <span class="ctl-label">学期</span>
+      <select id="semSel" title="选择学期(周课表浏览用)"></select>
+    </label>
+    <label class="ctl todaybox" title="今天">
+      <span id="todayTxt">—</span>
+    </label>
+    <button id="refreshBtn" class="ghost" title="重新拉取当前学期">刷新</button>
+  </div>
+</header>
+
+<!-- 顶部 Tab: 周课表 / 今日 -->
+<nav class="tabbar">
+  <button id="tabWeek" class="tab on">周课表</button>
+  <button id="tabToday" class="tab">今日</button>
+</nav>
+
+<main>
+  <!-- ============ Tab1 周课表 ============ -->
+  <div class="pane" id="paneWeek">
+    <div class="weekbar">
+      <span class="ctl-label">第</span>
+      <div class="weeknav">
+        <button id="prevW" title="上一周">‹</button>
+        <input id="weekIn" type="number" min="1" max="20" value="1">
+        <button id="nextW" title="下一周">›</button>
+      </div>
+      <span class="of">/ <b id="maxW">20</b> 周</span>
+      <button id="todayBtn" class="ghost" title="自动跳回今天所在的周">回到今天</button>
+      <button id="addBtn" class="ghost add" title="在当前周课表里补一门课/任务（也可直接点击空白格）">＋ 手动添加</button>
+    </div>
+    <nav class="weekstrip" id="weekStrip" title="点击直接跳周"></nav>
+    <div class="sheet" id="sheet"></div>
+    <section class="panel" id="onlinePanel" hidden>
+      <div class="panel-title">线上 / 自学课程（无固定时间与教室，不进课表格）</div>
+      <div class="chips" id="onlineChips"></div>
+    </section>
+  </div>
+
+  <!-- ============ Tab2 今日 ============ -->
+  <div class="pane" id="paneToday" hidden>
+    <div class="today-head" id="todayHead">
+      <div class="th-date" id="thDate">—</div>
+      <div class="th-meta" id="thMeta">…</div>
+    </div>
+    <div id="nextCard"></div>
+    <section class="panel" id="todayPanel">
+      <div class="panel-title">今日课程 <span class="dim" id="daySrc"></span></div>
+      <div class="dayrows" id="dayRows"></div>
+    </section>
+  </div>
+
+  <div class="hint" id="timeHint"></div>
+</main>
+
+<!-- 课程详情弹窗 -->
+<div class="mask" id="detailMask" hidden>
+  <div class="modal" id="detailModal">
+    <button class="x" data-close>×</button>
+    <div id="detailBody"></div>
+  </div>
+</div>
+
+<!-- 手动添加/编辑 课程或任务 弹窗 -->
+<div class="mask" id="addMask" hidden>
+  <div class="modal" id="addModal">
+    <button class="x" data-close>×</button>
+    <h2 id="addTitle">手动添加</h2>
+    <p class="dim" id="addHint"></p>
+
+    <label class="frow">名称 / 事项 <span class="req">*</span>
+      <input id="mfTitle" type="text" maxlength="40" placeholder="如：高数习题课 / 开班会 / 背单词">
+    </label>
+
+    <div class="fgrid">
+      <label class="frow">类型
+        <select id="mfKind">
+          <option value="course">课程</option>
+          <option value="task">任务</option>
+          <option value="memo">备忘</option>
+        </select>
+      </label>
+      <label class="frow">星期
+        <select id="mfDay"></select>
+      </label>
+      <label class="frow">从第
+        <select id="mfStart"></select>
+      </label>
+      <label class="frow">到第
+        <select id="mfEnd"></select>
+      </label>
+    </div>
+
+    <label class="frow">周次
+      <input id="mfWeeks" type="text" maxlength="30" placeholder="留空 = 每周都显示">
+      <span class="dim">留空代表本学期每周都有；也可写 1-16 / 1,3,5 / 8 等（当前学期共 <b id="mfMaxW">20</b> 周）</span>
+    </label>
+
+    <label class="frow">地点（可选）
+      <input id="mfLoc" type="text" maxlength="60" placeholder="教室 / 线上 / 操场…">
+    </label>
+
+    <label class="frow">备注（可选）
+      <input id="mfNote" type="text" maxlength="120" placeholder="老师 / 待办说明 / 想提醒自己的话…">
+    </label>
+
+    <div class="fbtns">
+      <button id="mfDel" class="ghost danger" hidden>删除这一项</button>
+      <span class="sp"></span>
+      <button id="mfCancel" class="ghost">取消</button>
+      <button id="mfSave" class="primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 我的 / 账号 弹窗 (账号中心) -->
+<div class="mask" id="acctMask" hidden>
+  <div class="modal sm" id="acctModal">
+    <button class="x" data-close>×</button>
+    <h2>我的 / 账号</h2>
+    <div class="acct-card">
+      <div class="acct-row"><span class="k">当前账号</span><span class="v" id="acctUser">—</span></div>
+      <div class="acct-row"><span class="k">运行模式</span><span class="v" id="acctMode">—</span></div>
+      <div class="acct-row"><span class="k">本地缓存</span><span class="v" id="acctSize">—</span></div>
+    </div>
+    <p class="dim" id="acctTip"></p>
+    <div class="fbtns acct-btn">
+      <button id="acctClear" class="ghost">清除缓存数据</button>
+      <span class="sp"></span>
+      <button id="acctLogout" class="ghost danger" hidden>退出并更换账号</button>
+    </div>
+    <p class="acct-foot">开源 · <a id="ghLink" href="https://github.com/yangyin18/cqie-schedule" target="_blank" rel="noopener">github.com/yangyin18/cqie-schedule</a></p>
+  </div>
+</div>
+
+<!-- 提示浮层 -->
+<div class="toast" id="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>

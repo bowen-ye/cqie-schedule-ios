@@ -125,6 +125,12 @@ async function _njw(method, url, json) {
 
 /* 把后端 /api/* 直连到教务, 返回与 server.py 相同形状 -> 上层代码零改动 */
 async function apiNative(path) {
+  // 本地没有任何 token(刚退出登录 / 首次未登录): 需要鉴权的接口直接判"未登录",
+  // 既不发请求、也不自动弹登录页。这样退出后是干净的落地页(带"去官方登录页"按钮),
+  // 不会因 SSO 一秒内静默登回原账号而看起来像"退不掉"。
+  if (path !== "/api/state" && !_bearer()) {
+    return { ok: false, needLogin: true, account: "", msg: "未登录" };
+  }
   const acct = () => jwtSub(_bearer());
   const sortSessions = (items) => {
     const key = (it) => {
@@ -928,11 +934,17 @@ function showLoginNeed(d) {
   if (NATIVE) {
     $("sheet").innerHTML =
       `<div class="blank"><div class="big">🔑</div>尚未登录教务账号` +
-      `<div class="errband">打开 App 会自动进入官方登录页；若没弹出，点下方按钮。</div>` +
+      `<div class="errband">本机登录信息已清空(退出完成)。点下方按钮，用官方登录页登录/换账号。</div>` +
       `<div class="fbtns" style="justify-content:center;margin-top:14px">` +
       `<button class="primary" id="goLoginBtn">去官方登录页</button></div></div>`;
     const b = $("goLoginBtn");
-    if (b) b.onclick = () => { const A = _A(); try { if (A && A.ensureToken) A.ensureToken(); } catch (e) { } location.reload(); };
+    if (b) b.onclick = () => {
+      const A = _A();
+      try {
+        if (A && A.relogin) A.relogin();                    // 非阻塞弹官方登录页, 成功原生自动刷新
+        else if (A && A.ensureToken) { A.ensureToken(); location.reload(); }
+      } catch (e) { }
+    };
     return;
   }
   $("sheet").innerHTML =
@@ -1018,11 +1030,12 @@ function logoutAccount() {
     return;
   }
   const A = _A();
-  try { if (A && A.logout) A.logout(); } catch (e) { }   // 清掉原生 token
+  try { if (A && A.logout) A.logout(); } catch (e) { }
+  // A.logout() 原生侧: 清 token + 官方 CAS cookie(没有它, 换号会被 SSO 静默登回原号)
   _tok = null;
   S.account = null;
   wipeLocal();
-  location.reload();   // 重新进入: 无 token 的首次接口调用会自动弹官方登录页(可改登他人)
+  location.reload();   // 重进即"未登录"落地页(上方短路径, 不再自动弹登录), 点「去官方登录页」登录/换号
 }
 
 /* ---------------- 启动 ---------------- */
@@ -1030,7 +1043,7 @@ async function init() {
   if (NATIVE) {                       // APK 壳里的小调整
     const b = document.querySelector(".badge");
     if (b) b.textContent = "直连教务";
-    document.title = "教务课表";
+    document.title = "cqie课表";
   }
   measureHeights();
   bindUI();

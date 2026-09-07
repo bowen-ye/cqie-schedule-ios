@@ -64,7 +64,11 @@ private fun parseAndSave(ctx: Context, json: String): String? = try {
     if (at.isEmpty()) {
         null
     } else {
-        TokenStore.save(ctx, at, j.optString("refresh_token").ifEmpty { null }, j.optLong("expires_in", 604799L))
+        // 有些实现刷新响应里不带新的 refresh_token; 此时沿用旧的, 绝不能清空覆盖
+        // (否则一次刷新后 refresh 就永久失效, 用户就不得不重新登录了)
+        var rt = j.optString("refresh_token")
+        if (rt.isEmpty()) rt = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("rt", "") ?: ""
+        TokenStore.save(ctx, at, rt.ifEmpty { null }, j.optLong("expires_in", 604799L))
         at
     }
 } catch (e: Exception) {
@@ -113,8 +117,9 @@ fun refreshAccessToken(ctx: Context): String? {
             .build()
         httpClient.newCall(req).execute().use { resp ->
             val s = resp.body?.string() ?: ""
-            if (resp.code in 200..299) parseAndSave(ctx, s)
-            else { TokenStore.clear(ctx); null }
+            // 续期失败(网络/服务器临时故障)不碰本地登录态: 下次启动会再次尝试静默续期。
+            // 只有 refresh 真正失效时, 界面上才会因 401 自动弹官方登录页。
+            if (resp.code in 200..299) parseAndSave(ctx, s) else null
         }
     } catch (e: Exception) {
         null

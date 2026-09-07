@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_bg">#2F6BFF</color>
+    <!-- 图标配色已改用 drawable/ic_bg.xml(渐变) + drawable/ic_fg.xml(白卡/蓝条/暖黄), 此处留空备用 -->
 </resources>

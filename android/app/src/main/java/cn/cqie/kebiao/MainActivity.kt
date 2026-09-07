@@ -13,7 +13,6 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
-import android.widget.Toast
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -24,6 +23,8 @@ import java.util.concurrent.TimeUnit
  * 向 H5 注入 window.Android 桥:
  *   token()        当前 access_token(仅 content 态)
  *   ensureToken()  阻塞式: 先静默续期; 不行则弹官方登录页, 返回有效 token
+ *   relogin()      非阻塞: 直接弹官方登录页(补登录/换号), 成功由 onActivityResult 刷新
+ *   logout()       账号中心「退出」: 清本地 token + 官方 CAS cookie(否则 SSO 会静默登回原号)
  *   http()         OkHttp 直连(绕过 WebView CORS), 用于 H5 fetch 兜底
  */
 class MainActivity : Activity() {
@@ -97,6 +98,7 @@ class MainActivity : Activity() {
     private fun requestLogin(blocking: Boolean): String? {
         if (!blocking) {
             runOnUiThread {
+                if (mode == "login") return@runOnUiThread   // 防连点开两个登录页
                 mode = "login"
                 startActivityForResult(Intent(this, LoginActivity::class.java), RC_LOGIN)
             }
@@ -123,10 +125,11 @@ class MainActivity : Activity() {
         loginLatch = null
         if (TokenStore.valid(this)) {
             showContent()
-        } else if (latch == null) {
-            // 首次启动被取消且无 token
-            Toast.makeText(this, "未登录，无法查看课表", Toast.LENGTH_SHORT).show()
-            finish()
+        } else {
+            // 登录被取消/失败(含主动退出后): 回到「未登录」落地页(可再点"去登录"),
+            // 不再把整个 App 关掉。
+            mode = "content"
+            web.loadUrl(CONTENT_INDEX)
         }
         latch?.countDown()
     }
@@ -149,9 +152,23 @@ class MainActivity : Activity() {
 
         @JavascriptInterface
         fun logout() {
-            // 账号中心「退出」: 清掉本地 token。由 JS 接着清 localStorage 并 reload,
-            // reload 后的首次接口 401 -> ensureToken -> 自动弹官方登录页可换号。
+            // 账号中心「退出」: 清本地 token, 并且必须连官方 CAS 会话 cookie 一起清掉 ——
+            // 否则换号登录时被 SSO 一秒内静默登回原账号, 看起来就像"退不掉"。
+            // JS 侧随后会清 localStorage(kbt-*) 并 reload 到"未登录"落地页。
             TokenStore.clear(this@MainActivity)
+            try {
+                android.webkit.CookieManager.getInstance().apply {
+                    removeAllCookies(null)
+                    flush()
+                }
+            } catch (e: Exception) {
+            }
+        }
+
+        /** 账号中心「去官方登录页」: 非阻塞弹官方登录页, 不冻结 H5; 成功后由 onActivityResult 刷新内容页。 */
+        @JavascriptInterface
+        fun relogin() {
+            requestLogin(blocking = false)
         }
 
         @JavascriptInterface

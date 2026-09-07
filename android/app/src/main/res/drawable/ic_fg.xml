@@ -1,26 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 前景: 白色"课表格"线框(居中于安全区) -->
+<!-- 前景: 白色圆角"课表卡片", 卡内三节课程条(今天高亮为暖黄) -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- 外框圆角矩形 -->
+
+    <!-- 白卡片: 圆角 12, x34..74 / y30..78 -->
     <path
-        android:pathData="M33,26 h42 a9,9 0 0 1 9,9 v38 a9,9 0 0 1 -9,9 h-42 a9,9 0 0 1 -9,-9 v-38 a9,9 0 0 1 9,-9 z"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="6"
-        android:fillColor="#00000000" />
-    <!-- 横线两条(3 行) -->
+        android:pathData="M46,30 h16 a12,12 0 0 1 12,12 v24 a12,12 0 0 1 -12,12 h-16 a12,12 0 0 1 -12,-12 v-24 a12,12 0 0 1 12,-12 z"
+        android:fillColor="#FFFFFF" />
+
+    <!-- 课程条 1(深蓝, 满宽) -->
     <path
-        android:pathData="M24,42 h60 M24,58 h60"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="5"
-        android:fillColor="#00000000" />
-    <!-- 竖线一条(2 列), 再一条 -->
+        android:pathData="M39,41 a4,4 0 0 1 4,-4 h22 a4,4 0 0 1 4,4 a4,4 0 0 1 -4,4 h-22 a4,4 0 0 1 -4,-4 z"
+        android:fillColor="#2E5BFF" />
+    <!-- 课程条 2(暖黄 = 今天, 右对齐) -->
     <path
-        android:pathData="M54,26 v56"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="5"
-        android:fillColor="#00000000" />
+        android:pathData="M54,50 h11 a4,4 0 0 1 4,4 a4,4 0 0 1 -4,4 h-11 a4,4 0 0 1 -4,-4 a4,4 0 0 1 4,-4 z"
+        android:fillColor="#FFC84D" />
+    <!-- 课程条 3(深蓝, 满宽) -->
+    <path
+        android:pathData="M39,67 a4,4 0 0 1 4,-4 h22 a4,4 0 0 1 4,4 a4,4 0 0 1 -4,4 h-22 a4,4 0 0 1 -4,-4 z"
+        android:fillColor="#2E5BFF" />
 </vector>

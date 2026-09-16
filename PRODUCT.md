@@ -24,15 +24,16 @@ The product reads the student's official timetable but owns the presentation lay
 
 ## Operating Context
 
-The intended Safari flow is blocked because the school's OAuth client rejects external callback URLs. Until the school adds an approved callback, iPhone users must install the native wrapper, which safely intercepts the school's registered callback. Account credentials remain on official school pages. Timetable and OAuth tokens stay on the student's device.
+The school's OAuth client rejects external callback URLs, and its duplicate cross-origin headers make browser API calls fail. The public Safari fallback therefore uses a one-time, user-installed bookmarklet: the student signs in on the official site, invokes the bookmark, and the bookmark reads the current-term schedule on that same origin. It returns only compressed schedule data in a URL fragment that is cleared immediately and accepted only when its device-generated nonce matches. The home-screen entry opens in Safari so it shares the same local storage. Account credentials and tokens never leave official school pages.
 
 ## Capabilities and Constraints
 
-- Official CAS/OAuth login and direct read-only timetable API access in the native wrappers; external web callbacks are confirmed blocked by the school's allowlist.
+- Official CAS/OAuth login and direct read-only timetable API access in the native wrappers.
+- Safari fallback through a one-time local bookmarklet because external OAuth callbacks and browser API calls are blocked by the school's configuration.
 - Week, today, next-class, course details, offline cache, and manual entries.
-- iOS requires the user to perform Safari's final Share > Add to Home Screen action; websites cannot trigger it automatically.
+- iOS requires the user to perform Safari's final Share > Add to Home Screen action; websites cannot trigger it automatically. The web manifest uses browser display mode so the home-screen entry shares Safari's imported schedule data.
 - Mobile schedules must never overlay course content. True conflicts remain visible and explicitly identified.
-- Public deployment is deliberately deferred until the user approves it.
+- The public web surface is deployed, while native App Store/TestFlight distribution remains deferred.
 
 ## Brand Commitments
 

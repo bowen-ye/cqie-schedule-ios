@@ -24,6 +24,8 @@ const LS = {
   rows: "kbt-rows-",             // + sessionId -> 该学期课表原始行(离线缓存)
   lastFetch: "kbt-fetched-",     // + sessionId -> 时间戳 ms
   manual: "kbt-manual-",         // + sessionId -> 用户手动添加的课程/任务[]
+  webImport: "kbt-web-import-v1", // Safari 书签从教务同源导入的状态
+  webNonce: "kbt-web-bridge-nonce-v1", // 将返回数据绑定到本机生成的书签
 };
 const CACHE_MAX_AGE = 7 * 864e5; // 课表离线缓存最长 7 天; 有网时后台总会刷新
 const REFRESH_COOLDOWN = 5 * 60e3; // 打开页自动静默刷新的最小间隔 5 分钟
@@ -61,9 +63,9 @@ function blankState(kind, text) {
   return `<div class="blank"><div class="big">${STATUS_ICON[kind] || STATUS_ICON.info}</div>${text}</div>`;
 }
 
-/* ---------------- 直连模式 (Android / iOS / Safari PWA) ----------------
- * 原生壳通过 window.Android 提供桥; HTTPS 网页通过学校 OAuth 直接拿 Bearer token。
- * 两种模式都只连接学校官方接口, 不经过自建中转服务器。
+/* ---------------- 数据模式 (Android / iOS / Safari) ----------------
+ * 原生壳通过 window.Android 直连学校接口；Safari 只读取书签导入的本机课表快照。
+ * 账号密码不经过自建服务器，Web 页面也不保存学校 token。
  */
 const APP_PLATFORM = (() => {
   try {
@@ -71,7 +73,7 @@ const APP_PLATFORM = (() => {
     return window.Android.platform();
   } catch (e) { return ""; }
 })();
-const WEB_DIRECT = !APP_PLATFORM && (location.protocol === "https:" || new URLSearchParams(location.search).has("direct"));
+const WEB_DIRECT = !APP_PLATFORM && (location.protocol === "https:" || new URLSearchParams(location.search).has("direct") || /^#(?:data|bridge)=/.test(location.hash));
 const NATIVE_PLATFORM = APP_PLATFORM || (WEB_DIRECT ? "web" : "");
 const NATIVE = !!NATIVE_PLATFORM;
 
@@ -80,151 +82,323 @@ const NJW = {
   enroll: "https://njw.cqie.edu.cn/api/enrollment",
   resource: "https://njw.cqie.edu.cn/api/resourceapi",
 };
-const WEB_OAUTH = {
-  auth: "https://njw.cqie.edu.cn/authserver",
-  clientId: "personal-prod",
-  clientSecret: "app-a-1234",
-  tokenKey: "kbt-web-oauth-v1",
-  stateKey: "kbt-web-oauth-state",
-};
-// The school currently rejects every external callback URL for personal-prod.
-const WEB_OAUTH_CALLBACK_ALLOWED = false;
+const LEGACY_WEB_TOKEN_KEY = "kbt-web-oauth-v1";
+const OFFICIAL_WORKSPACE = "https://njw.cqie.edu.cn/workspace/";
 /* 与 server.py 裁剪一致: 只回传渲染所需字段(原始行 150+ 键, 裁掉省内存) */
 const KEEP = ["courseName", "courseCode", "classNbr", "credit", "campusName", "roomName",
   "roomLabel", "instructorName", "courseDepartmentName", "weekDay", "periodFormat",
   "teachingWeekFormat", "teachingWeek", "period"];
 
 let _tok = null;
-
-function webTokenRecord() {
-  try { return JSON.parse(localStorage.getItem(WEB_OAUTH.tokenKey) || "null"); }
-  catch (e) { return null; }
-}
-function saveWebToken(j) {
-  const old = webTokenRecord() || {};
-  const record = {
-    accessToken: j.access_token || "",
-    refreshToken: j.refresh_token || old.refreshToken || "",
-    expiresAt: Date.now() + Math.max(60, (+j.expires_in || 604799) - 120) * 1000,
-  };
-  localStorage.setItem(WEB_OAUTH.tokenKey, JSON.stringify(record));
-  _tok = record.accessToken || null;
-  return record.accessToken;
-}
 function webRedirectUri() {
   return location.origin + location.pathname;
 }
-async function webTokenRequest(fields) {
-  const body = new URLSearchParams(fields);
-  const basic = btoa(WEB_OAUTH.clientId + ":" + WEB_OAUTH.clientSecret);
-  const response = await fetch(WEB_OAUTH.auth + "/oauth/token", {
-    method: "POST",
-    headers: {
-      Authorization: "Basic " + basic,
-      Accept: "application/json",
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body,
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.access_token) throw new Error(data.error_description || "登录凭证获取失败");
-  return saveWebToken(data);
+function bytesFromBase64(value) {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
-async function refreshWebToken() {
-  const record = webTokenRecord();
-  if (!record || !record.refreshToken) return "";
+function webBridgeNonce(create) {
   try {
-    return await webTokenRequest({
-      grant_type: "refresh_token",
-      refresh_token: record.refreshToken,
-      client_id: WEB_OAUTH.clientId,
-      client_secret: WEB_OAUTH.clientSecret,
-    });
+    const saved = localStorage.getItem(LS.webNonce) || "";
+    if (/^[a-f0-9]{32}$/.test(saved)) return saved;
+    if (!create) return "";
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    const nonce = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+    localStorage.setItem(LS.webNonce, nonce);
+    return nonce;
   } catch (e) { return ""; }
 }
-function randomState() {
-  const bytes = new Uint8Array(18);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (n) => n.toString(16).padStart(2, "0")).join("");
-}
-function startWebLogin(force) {
-  if (!WEB_OAUTH_CALLBACK_ALLOWED) {
-    const button = $("authLoginBtn");
-    $("authGate").hidden = false;
-    $("authMessage").textContent = "学校暂未开放外部网页登录，请使用 iPhone App";
-    if (button) {
-      button.disabled = true;
-      button.querySelector("span").textContent = "网页登录暂不可用";
-    }
-    return;
-  }
-  const state = randomState();
-  sessionStorage.setItem(WEB_OAUTH.stateKey, state);
-  const query = new URLSearchParams({
-    client_id: WEB_OAUTH.clientId,
-    response_type: "code",
-    scope: "all",
-    state,
-    redirect_uri: webRedirectUri(),
+function boundedScheduleList(value, max) {
+  const text = String(value || "").replace(/[周节\s]/g, "");
+  if (!text) return true;
+  return text.split(/[,，]/).every((part) => {
+    const match = part.match(/^(\d+)(?:[-—~](\d+))?$/);
+    if (!match) return false;
+    const start = +match[1], end = +(match[2] || match[1]);
+    return start >= 1 && start <= max && end >= start && end <= max;
   });
-  if (force) query.set("prompt", "login");
-  location.assign(WEB_OAUTH.auth + "/oauth/authorize?" + query.toString());
 }
-async function handleWebOAuthCallback() {
-  if (!WEB_DIRECT) return;
-  const query = new URLSearchParams(location.search);
-  const code = query.get("code");
-  const error = query.get("error");
-  if (!code && !error) return;
-  const gate = $("authGate");
-  const message = $("authMessage");
-  if (gate) gate.hidden = false;
-  if (message) message.textContent = error ? "学校登录未完成" : "正在读取你的课表…";
-  try {
-    if (error) throw new Error(query.get("error_description") || error);
-    const expected = sessionStorage.getItem(WEB_OAUTH.stateKey);
-    if (!expected || expected !== query.get("state")) throw new Error("登录状态校验失败，请重新登录");
-    await webTokenRequest({
-      client_id: WEB_OAUTH.clientId,
-      client_secret: WEB_OAUTH.clientSecret,
-      code,
-      redirect_uri: webRedirectUri(),
-      grant_type: "authorization_code",
+function normalizeImportedRows(rows) {
+  const fields = ["courseName", "courseCode", "classNbr", "credit", "campusName", "roomName",
+    "roomLabel", "instructorName", "courseDepartmentName", "periodFormat",
+    "teachingWeekFormat", "teachingWeek", "period"];
+  return rows.map((row) => {
+    const output = {};
+    fields.forEach((key) => {
+      if (row[key] == null) return;
+      if (typeof row[key] !== "string" && typeof row[key] !== "number") throw new Error("invalid row field");
+      const text = String(row[key]);
+      if (text.length > 1000) throw new Error("row field too long");
+      output[key] = text;
     });
-    sessionStorage.removeItem(WEB_OAUTH.stateKey);
-    history.replaceState({}, document.title, location.pathname);
-    if (gate) gate.hidden = true;
+    if (row.weekDay != null && String(row.weekDay) !== "") {
+      const day = +row.weekDay;
+      if (!Number.isInteger(day) || day < 1 || day > 7) throw new Error("invalid weekday");
+      output.weekDay = String(day);
+      if (!boundedScheduleList(output.periodFormat, 24)) throw new Error("invalid period");
+    }
+    if (!boundedScheduleList(output.teachingWeekFormat, 60)) throw new Error("invalid weeks");
+    if (output.teachingWeek && !/^[01]{1,60}$/.test(output.teachingWeek)) delete output.teachingWeek;
+    return output;
+  });
+}
+async function readBridgePayload() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  const payload = params.get("data");
+  const legacy = params.get("bridge");
+  if (!payload && !legacy) return null;
+  // Fragment never reaches the hosting server. Remove it before any other request.
+  history.replaceState({}, document.title, location.pathname + location.search);
+  if (!payload) return { error: "导入代码已更新，请重新复制书签代码后再试" };
+  if (payload.length > 200000) return { error: "课表数据过大，无法安全导入" };
+  try {
+    const mode = payload.charAt(0);
+    let bytes = bytesFromBase64(payload.slice(1));
+    if (mode === "g") {
+      if (typeof DecompressionStream !== "function") throw new Error("unsupported gzip");
+      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+      bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+    } else if (mode !== "u") throw new Error("invalid encoding");
+    if (bytes.byteLength > 5 * 1024 * 1024) throw new Error("payload too large");
+    const data = JSON.parse(new TextDecoder().decode(bytes));
+    const sid = data && data.s && String(data.s.i || "");
+    const expectedNonce = webBridgeNonce(false);
+    if (!expectedNonce || data.n !== expectedNonce) {
+      return { error: "导入校验失败，请重新复制“导入课表”书签代码后再试" };
+    }
+    const validRows = Array.isArray(data.r) && data.r.length <= 500 && data.r.every((row) => row && typeof row === "object" && !Array.isArray(row));
+    const validClock = (value) => {
+      const match = String(value || "").match(/^(\d{1,2}):([0-5]\d)$/);
+      return !!match && +match[1] <= 23;
+    };
+    const validTimes = Array.isArray(data.t) && data.t.length <= 24 && data.t.every((item) =>
+      item && Number.isInteger(+item.period) && +item.period >= 1 && +item.period <= 24 &&
+      validClock(item.start) && validClock(item.end));
+    if (data.v !== 2 || !/^\d{1,20}$/.test(sid) || !validRows || !validTimes) {
+      throw new Error("invalid payload");
+    }
+    if ((typeof data.a !== "string" && typeof data.a !== "number") || String(data.a).length > 100 ||
+        (typeof data.s.y !== "string" && typeof data.s.y !== "number") || String(data.s.y).length > 100) {
+      throw new Error("invalid metadata");
+    }
+    data.r = normalizeImportedRows(data.r);
+    return data;
   } catch (e) {
-    localStorage.removeItem(WEB_OAUTH.tokenKey);
-    if (message) message.textContent = (e && e.message) || "登录失败，请重试";
+    return { error: "导入信息无效，请重新登录教务系统后再试" };
   }
 }
+function saveWebSchedule(data) {
+  const sid = String(data.s.i);
+  const importedAt = Date.now();
+  let previousMeta = null;
+  let accountChanged = false;
+  try {
+    previousMeta = JSON.parse(localStorage.getItem(LS.meta) || "null");
+    accountChanged = !!(previousMeta && previousMeta.account && data.a && String(previousMeta.account) !== String(data.a));
+  } catch (e) { }
+  const sameImport = !!(previousMeta && String(previousMeta.activeId || "") === sid &&
+    String(previousMeta.account || "") === String(data.a || ""));
+  let week = +data.w >= 1 && +data.w <= 60 ? +data.w : null;
+  let baseMonday = null;
+  if (week == null && sameImport && Number.isInteger(+previousMeta.curWeek) &&
+      +previousMeta.curWeek >= 1 && +previousMeta.curWeek <= 60) {
+    week = +previousMeta.curWeek;
+    const previousMonday = new Date(previousMeta.baseMonday || "");
+    if (!Number.isNaN(previousMonday.getTime())) baseMonday = previousMonday.toISOString();
+  }
+  const times = FALLBACK_TIMES.slice();
+  let gotTimes = 0;
+  (Array.isArray(data.t) ? data.t : []).forEach((item) => {
+    const period = +item.period;
+    if (period >= 1 && period <= times.length && item.start && item.end) {
+      times[period - 1] = String(item.start) + "-" + String(item.end);
+      gotTimes++;
+    }
+  });
+  let savedTimes = gotTimes ? times : null;
+  let timesAuto = gotTimes > 0;
+  const validCachedRange = (value) => {
+    const match = String(value || "").match(/^(\d{1,2}):([0-5]\d)-(\d{1,2}):([0-5]\d)$/);
+    return !!match && +match[1] <= 23 && +match[3] <= 23;
+  };
+  if (!gotTimes && sameImport && previousMeta.timesAuto === true &&
+      Array.isArray(previousMeta.times) && previousMeta.times.length === FALLBACK_TIMES.length &&
+      previousMeta.times.every(validCachedRange)) {
+    savedTimes = previousMeta.times.slice();
+    timesAuto = true;
+  }
+  const meta = {
+    account: String(data.a || ""),
+    sessions: [{ sessionId: sid, yearAndTerm: String(data.s.y || "当前学期"), active: true }],
+    activeId: sid,
+    curWeek: week,
+    baseMonday,
+    times: savedTimes,
+    timesAuto,
+  };
+  const rowsKey = LS.rows + sid;
+  const fetchedKey = LS.lastFetch + sid;
+  const writes = [
+    [rowsKey, JSON.stringify({ at: importedAt, rows: data.r })],
+    [LS.meta, JSON.stringify(meta)],
+    [fetchedKey, String(importedAt)],
+    [LS.webImport, JSON.stringify({ importedAt, sessionId: sid })],
+  ];
+  const previousValues = writes.map(([key]) => [key, localStorage.getItem(key)]);
+  try {
+    writes.forEach(([key, value]) => localStorage.setItem(key, value));
+  } catch (e) {
+    previousValues.forEach(([key, value]) => {
+      try { if (value == null) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch (restoreError) { }
+    });
+    throw e;
+  }
+  if (accountChanged) {
+    const keep = new Set([LS.webNonce, rowsKey, LS.meta, fetchedKey, LS.webImport]);
+    const remove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.indexOf("kbt-") === 0 && !keep.has(key)) remove.push(key);
+    }
+    remove.forEach((key) => localStorage.removeItem(key));
+  }
+  localStorage.removeItem(LEGACY_WEB_TOKEN_KEY);
+  _tok = null;
+}
+function webImportRecord() {
+  try {
+    const record = JSON.parse(localStorage.getItem(LS.webImport) || "null");
+    const meta = JSON.parse(localStorage.getItem(LS.meta) || "null");
+    if (!record || !record.sessionId || !meta || String(meta.activeId || "") !== String(record.sessionId) ||
+        !Array.isArray(meta.sessions) || !meta.sessions.some((item) => String(item.sessionId) === String(record.sessionId))) return null;
+    const rows = JSON.parse(localStorage.getItem(LS.rows + record.sessionId) || "null");
+    return rows && Array.isArray(rows.rows) ? record : null;
+  } catch (e) { return null; }
+}
+async function handleWebScheduleBridge() {
+  if (!WEB_DIRECT) return false;
+  const data = await readBridgePayload();
+  if (!data) return false;
+  if (data.error) {
+    sessionStorage.setItem("kbt-bridge-error", data.error);
+    return false;
+  }
+  try {
+    saveWebSchedule(data);
+  } catch (e) {
+    sessionStorage.setItem("kbt-bridge-error", "课表已读取，但本机存储失败，请清理 Safari 网站数据后重试");
+    return false;
+  }
+  sessionStorage.removeItem("kbt-bridge-error");
+  sessionStorage.setItem("kbt-bridge-success", "1");
+  return true;
+}
+async function runScheduleBookmark(target, keep, nonce) {
+  try {
+    if (location.origin !== "https://njw.cqie.edu.cn") throw new Error("请在学校教务系统首页点击此书签");
+    const readToken = () => {
+      const value = localStorage.getItem("cqu_edu_ACCESS_TOKEN");
+      try { return JSON.parse(value); } catch (e) { return value || ""; }
+    };
+    const accessToken = readToken();
+    if (!accessToken) throw new Error("请先登录并进入教务系统首页");
+    const request = async (url, method) => {
+      const headers = { Authorization: "Bearer " + accessToken, Accept: "application/json" };
+      const options = { method: method || "GET", headers };
+      if (method === "POST") {
+        headers["Content-Type"] = "application/json";
+        options.body = "{}";
+      }
+      const response = await fetch(url, options);
+      if (!response.ok) throw new Error("教务接口返回 " + response.status);
+      return response.json();
+    };
+    const toBase64 = (bytes) => {
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += 32768) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768));
+      }
+      return btoa(binary);
+    };
+    const root = "https://njw.cqie.edu.cn/api/";
+    const sessionsJson = await request(root + "enrollment/enrollment-batch/session-list");
+    const sessions = sessionsJson && sessionsJson.data;
+    if (!Array.isArray(sessions)) throw new Error("无法读取学期列表，请重新登录后再试");
+    const term = sessions.find((item) => String(item.activeFlag) === "Y") || sessions[0];
+    if (!term) throw new Error("没有找到当前学期");
+    const [weekJson, timesJson] = await Promise.all([
+      request(root + "timetable/time/cur-week").catch(() => ({})),
+      request(root + "resourceapi/timePattern/get-large-period").catch(() => ({})),
+    ]);
+    const timetableJson = await request(
+      root + "timetable/class/timetable/student/my-table-detail?sessionId=" + encodeURIComponent(term.sessionId),
+      "POST",
+    );
+    const timetableRows = timetableJson && timetableJson.classTimetableVOList;
+    if (!Array.isArray(timetableRows)) throw new Error("无法读取课表，请稍后重试");
+    const rows = timetableRows.map((row) => {
+      const output = {};
+      keep.forEach((key) => { if (row[key] != null) output[key] = row[key]; });
+      return output;
+    });
+    const weekKeys = Object.keys(weekJson.data || {}).filter((key) => /^\d+$/.test(key));
+    const groups = timesJson.data || [];
+    const periods = (groups[0] && groups[0].periodList) || [];
+    let account = "";
+    try {
+      let encoded = accessToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+      while (encoded.length % 4) encoded += "=";
+      const claims = JSON.parse(atob(encoded));
+      account = claims.sub || claims.username || claims.uid || claims.userName || "";
+    } catch (e) { }
+    const data = {
+      v: 2,
+      n: nonce,
+      a: account,
+      s: { i: String(term.sessionId), y: term.yearAndTerm || "当前学期" },
+      w: weekKeys.length ? +weekKeys[0] : null,
+      t: periods.map((item) => ({ period: +item.smallPeriod, start: item.startTime, end: item.endTime })),
+      r: rows,
+    };
+    const raw = new TextEncoder().encode(JSON.stringify(data));
+    let mode = "u";
+    let bytes = raw;
+    if (typeof CompressionStream === "function" && typeof DecompressionStream === "function") {
+      const stream = new Blob([raw]).stream().pipeThrough(new CompressionStream("gzip"));
+      bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+      mode = "g";
+    }
+    location.replace(target + "#data=" + encodeURIComponent(mode + toBase64(bytes)));
+  } catch (e) {
+    alert("课表导入失败：" + ((e && e.message) || "请重新登录后再试"));
+  }
+}
+function bookmarkletCode() {
+  const runner = runScheduleBookmark.toString().replace(/\s+/g, " ").trim();
+  const nonce = webBridgeNonce(true);
+  if (!nonce) throw new Error("无法创建本机导入校验码");
+  return "javascript:(" + runner + ")(" + JSON.stringify(webRedirectUri()) + "," + JSON.stringify(KEEP) + "," + JSON.stringify(nonce) + ");void 0";
+}
+function showWebSetup(message) {
+  const gate = $("authGate"), setup = $("webSetup"), login = $("authLoginBtn");
+  gate.hidden = false;
+  setup.hidden = false;
+  login.hidden = true;
+  $("authMessage").textContent = message || sessionStorage.getItem("kbt-bridge-error") || "首次使用约 1 分钟，设置后可直接打开课表";
+}
+function startWebLogin() { showWebSetup(); }
 const WEB_BRIDGE = {
   platform: () => "web",
-  token: () => (webTokenRecord() || {}).accessToken || "",
-  ensureToken: async () => {
-    const record = webTokenRecord();
-    if (record && record.accessToken && record.expiresAt > Date.now() + 60000) return record.accessToken;
-    const refreshed = await refreshWebToken();
-    if (refreshed) return refreshed;
-    startWebLogin(false);
-    return "";
-  },
-  relogin: async () => { startWebLogin(true); return ""; },
+  token: () => "",
+  ensureToken: async () => { showWebSetup(); return ""; },
+  relogin: async () => { showWebSetup(); return ""; },
   logout: async () => {
-    localStorage.removeItem(WEB_OAUTH.tokenKey);
+    localStorage.removeItem(LEGACY_WEB_TOKEN_KEY);
     _tok = null;
     return true;
-  },
-  http: async (method, url, bearer, body) => {
-    try {
-      const headers = { Accept: "application/json" };
-      if (bearer) headers.Authorization = "Bearer " + bearer;
-      if (body) headers["Content-Type"] = "application/json";
-      const response = await fetch(url, { method, headers, body: body || undefined });
-      const text = await response.text();
-      return response.ok ? text : `__KBT_ERR__${response.status}\n${text.slice(0, 500)}`;
-    } catch (e) { return "__KBT_ERR__0\n" + ((e && e.message) || "网络错误"); }
   },
 };
 function _A() {
@@ -248,7 +422,7 @@ function todayStamp() {
   return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
 }
 
-/* 网络层: 先试 fetch(壳放开 file:// 跨域时最快); CORS/断网回落原生 OkHttp 桥.
+/* 原生网络层: 先试 fetch(壳放开 file:// 跨域时最快); CORS/断网回落原生网络桥.
  * 401 时先静默续期一次(ensureToken 可能弹官方登录页), 再重试一遍。 */
 async function _njw(method, url, json) {
   const A = _A();
@@ -491,7 +665,13 @@ function applyMeta(m) {
     if (m.baseMonday) { S.baseMonday = new Date(m.baseMonday); }
     else { const mon = thisMonday(todayDate()); mon.setDate(mon.getDate() - (S.curWeek - 1) * 7); S.baseMonday = mon; }
   }
-  if (Array.isArray(m.times) && m.times.length) { S.times = m.times; S.timesAuto = true; }
+  if (Array.isArray(m.times) && m.times.length) { S.times = m.times; S.timesAuto = m.timesAuto !== false; }
+}
+function advanceImportedWeek() {
+  if (!(S.baseMonday instanceof Date) || Number.isNaN(S.baseMonday.getTime())) return;
+  const currentMonday = thisMonday(todayDate());
+  const week = Math.floor((currentMonday.getTime() - S.baseMonday.getTime()) / (7 * 864e5)) + 1;
+  if (week >= 1 && week <= 60) S.curWeek = week;
 }
 
 /* ---------------- 课程取色 ---------------- */
@@ -988,7 +1168,7 @@ function renderToday() {
       div.className = "dayrow" + (st === "going" ? " going" : st === "done" ? " done" : "");
       const badge = { going: "进行中", todo: "未到", done: "已过" }[st];
       div.innerHTML =
-        `<div class="dr-time"><b>${periodLabel(e.per.min, e.per.max)}</b><span>${clockRange(e.per.min, e.per.max)}</span></div>` +
+        `<div class="dr-time"><b>${periodLabel(e.per.min, e.per.max)}</b><span>${esc(clockRange(e.per.min, e.per.max))}</span></div>` +
         `<div class="dr-main">` +
         `<div class="dr-name"><span class="dotc" style="background:${colorOf(e.key)}"></span>${esc(e.name)}` +
         `<span class="dr-badge ${st}">${badge}</span></div>` +
@@ -1002,7 +1182,7 @@ function renderToday() {
   // 时间实时提示(放列表末尾小字)
   const tick = document.createElement("div");
   tick.className = "live-now";
-  tick.innerHTML = `${minHm(nm)} ${cpHint}`;
+  tick.textContent = `${minHm(nm)} ${cpHint}`;
   wrap.appendChild(tick);
 }
 function nextCard(e, tag, sub, col, going) {
@@ -1070,7 +1250,7 @@ function openDetail(key) {
       const clk = clockRange(e.per.min, e.per.max);
       const room = [e.campus, e.room].filter(Boolean).join(" · ");
       slots += `<li><b>${WD[e.weekDay - 1]} ${periodLabel(e.per.min, e.per.max)}</b>` +
-        (clk ? ` <span class="sd">${clk}</span>` : "") +
+        (clk ? ` <span class="sd">${esc(clk)}</span>` : "") +
         `　第 ${esc(e.weeksTxt)} 周　${esc(room || "无教室")}</li>`;
     });
   online.forEach((e) => {
@@ -1210,7 +1390,7 @@ async function loadTerm(sessionId, { force } = {}) {
   // 2) 本地缓存该学期行 → 秒开先渲染, 再后台刷新
   else {
     const cached = cacheLoadRows(sessionId);
-    if (cached && cached.length) {
+    if (Array.isArray(cached)) {
       S.models.set(sessionId, buildModel(cached));
       applyWeekDefault(sessionId);
       renderAll();
@@ -1218,6 +1398,10 @@ async function loadTerm(sessionId, { force } = {}) {
       $("sheet").innerHTML = blankState("loading", "正在拉取该学期课表…");
     }
   }
+
+  // Safari imports a complete current-term snapshot on the official origin.
+  // It stays local and intentionally never performs a cross-origin API refresh.
+  if (WEB_DIRECT && webImportRecord()) return;
 
   // 3) 网络刷新: 强制 / 无缓存 / 距上次抓取超过冷却期
   const last = +(localStorage.getItem(LS.lastFetch + sessionId) || 0);
@@ -1273,15 +1457,7 @@ function showLoginNeed(d) {
   $("acct").textContent = "未登录";
   if (NATIVE) {
     if (WEB_DIRECT) {
-      $("authGate").hidden = false;
-      $("authMessage").textContent = WEB_OAUTH_CALLBACK_ALLOWED
-        ? "登录后自动整理你的个人课表"
-        : "学校暂未开放外部网页登录，请使用 iPhone App";
-      if (!WEB_OAUTH_CALLBACK_ALLOWED) {
-        const button = $("authLoginBtn");
-        button.disabled = true;
-        button.querySelector("span").textContent = "网页登录暂不可用";
-      }
+      showWebSetup();
       return;
     }
     $("sheet").innerHTML = `<div class="blank"><div class="big">${STATUS_ICON.key}</div>尚未登录教务账号` +
@@ -1342,13 +1518,13 @@ function localBytes() {
 function fmtBytes(n) {
   return n < 1024 ? n + " B" : (n / 1024).toFixed(n < 10240 ? 1 : 0) + " KB";
 }
-/* 清掉所有 kbt-* 缓存键(学期/课表/手动项), 不动账号 token */
-function wipeLocal() {
+/* 清掉所有 kbt-* 本地数据，包括旧版本遗留的网页登录 token。 */
+function wipeLocal({ preserveManual = false } = {}) {
   const ks = [];
   try {
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
-      if (k && k.indexOf("kbt-") === 0) ks.push(k);
+      if (k && k.indexOf("kbt-") === 0 && k !== LS.webNonce && (!preserveManual || k.indexOf(LS.manual) !== 0)) ks.push(k);
     }
   } catch (e) { }
   ks.forEach((k) => { try { localStorage.removeItem(k); } catch (e) { } });
@@ -1358,20 +1534,30 @@ function acctUserText() {
   return S.account || "（本机后端代登录）";
 }
 function openAccount() {
+  const imported = WEB_DIRECT && webImportRecord();
   $("acctUser").textContent = acctUserText();
-  $("acctMode").textContent = NATIVE ? "直连教务 · 官方账号登录" : "Web 原型 · server.py 代登录";
+  $("acctMode").textContent = imported
+    ? "Safari 本机课表 · 官网导入"
+    : (NATIVE ? "直连教务 · 官方账号登录" : "Web 原型 · server.py 代登录");
   $("acctSize").textContent = fmtBytes(localBytes());
   const log = $("acctLogout");
   log.hidden = !NATIVE;
   log.classList.remove("armed");
   log.textContent = "退出并更换账号";
-  $("acctTip").textContent = NATIVE
+  $("acctTip").textContent = imported
+    ? "本页只保存导入后的课表数据，不保存教务凭证。需要更新时，回到教务首页点击“导入课表”书签。"
+    : NATIVE
     ? "账号密码在教务官方登录页输入，本机只存约 7 天有效的 token，过期自动静默续期。"
     : "本地缓存=最近学期的课表，供断网时秒开；清除后下次打开会自动从教务重新拉取。";
   showDialog($("acctMask"));
 }
 function clearCacheAccount() {
-  wipeLocal();
+  const imported = WEB_DIRECT && webImportRecord();
+  wipeLocal({ preserveManual: true });
+  if (imported) {
+    location.reload();
+    return;
+  }
   $("acctSize").textContent = fmtBytes(localBytes());
   toast("已清除本地缓存，下次打开自动重新拉取");
 }
@@ -1398,7 +1584,11 @@ function logoutAccount() {
 
 /* ---------------- 启动 ---------------- */
 async function init() {
-  await handleWebOAuthCallback();
+  await handleWebScheduleBridge();
+  if (WEB_DIRECT && !webImportRecord()) {
+    localStorage.removeItem(LEGACY_WEB_TOKEN_KEY);
+    _tok = null;
+  }
   if (NATIVE) {                       // App 壳里的小调整
     const b = document.querySelector(".badge");
     if (b) b.textContent = "直连教务";
@@ -1406,7 +1596,9 @@ async function init() {
   }
   measureHeights();
   bindUI();
+  const cachedWebImport = WEB_DIRECT ? webImportRecord() : null;
   applyMeta(cacheLoadMeta());          // 先用上次会话缓存(有则秒开, 无网也能用)
+  if (cachedWebImport) advanceImportedWeek();
 
   // 学期下拉(离线也能列出缓存的学期)
   const sel = $("semSel");
@@ -1428,10 +1620,40 @@ async function init() {
     S.sessionId = act0.sessionId;
     if (!S.models.has(act0.sessionId)) {
       const cached = cacheLoadRows(act0.sessionId);
-      if (cached && cached.length) S.models.set(act0.sessionId, buildModel(cached));
+      if (Array.isArray(cached)) S.models.set(act0.sessionId, buildModel(cached));
     }
     if (S.models.has(act0.sessionId)) { applyWeekDefault(act0.sessionId); renderAll(); }
     else { $("sheet").innerHTML = blankState("loading", "首次打开，正在从教务拉取…"); }
+  }
+
+  const webImport = cachedWebImport;
+  if (webImport) {
+    $("authGate").hidden = true;
+    $("acct").textContent = S.account ? `账号 ${S.account}` : "已导入";
+    const badge = document.querySelector(".badge");
+    if (badge) badge.textContent = "本机课表 · 只读";
+    $("refreshBtn").title = "去教务系统更新课表";
+    $("refreshBtn").setAttribute("aria-label", "去教务系统更新课表");
+    const importedAt = new Date(+webImport.importedAt || Date.now());
+    const importedLabel = importedAt.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    const bridgeError = sessionStorage.getItem("kbt-bridge-error");
+    $("timeHint").textContent = bridgeError
+      ? `本次更新失败，仍显示 ${importedLabel} 导入的课表 · 点右上角可重试`
+      : `课表由学校教务系统导入于 ${importedLabel} · 点右上角刷新可重新导入`;
+    cacheSaveMeta();
+    startTick();
+    setupInstallPrompt();
+    if (sessionStorage.getItem("kbt-bridge-success")) {
+      sessionStorage.removeItem("kbt-bridge-success");
+      toast("课表已从教务系统安全导入");
+    } else if (bridgeError) {
+      sessionStorage.removeItem("kbt-bridge-error");
+      toast(bridgeError, true);
+    }
+    if ("serviceWorker" in navigator && location.protocol === "https:") {
+      navigator.serviceWorker.register("./service-worker.js").catch(() => {});
+    }
+    return;
   }
 
   // 在线: 拉状态 + 学期 + 当前周 + 作息, 覆盖上面的缓存
@@ -1529,6 +1751,11 @@ function bindUI() {
   $("weekIn").onchange = (e) => setWeek(+e.target.value);
   $("todayBtn").onclick = () => { if (S.curWeek && S.sessionId === S.activeId) setWeek(S.curWeek); };
   $("refreshBtn").onclick = () => {
+    if (WEB_DIRECT && webImportRecord()) {
+      toast("打开教务后，点击“导入课表”书签");
+      setTimeout(() => location.assign(OFFICIAL_WORKSPACE), 900);
+      return;
+    }
     const sid = S.tab === "today" ? S.activeId : S.sessionId;
     if (sid) loadTerm(sid, { force: true });
   };
@@ -1540,6 +1767,22 @@ function bindUI() {
   $("acctClear").onclick = clearCacheAccount;
   $("acctLogout").onclick = logoutAccount;
   $("authLoginBtn").onclick = () => startWebLogin(false);
+  $("copyBridgeBtn").onclick = async () => {
+    try {
+      const code = bookmarkletCode();
+      await navigator.clipboard.writeText(code);
+      $("copyBridgeBtn").classList.add("copied");
+      $("copyBridgeBtn").querySelector("span").textContent = "已复制，去编辑书签";
+      toast("导入代码已复制");
+    } catch (e) {
+      try {
+        const code = bookmarkletCode();
+        window.prompt("复制下面的导入代码", code);
+      } catch (createError) {
+        toast((createError && createError.message) || "无法生成导入代码", true);
+      }
+    }
+  };
   document.addEventListener("keydown", (event) => {
     if (!activeDialog) return;
     if (event.key === "Escape") { event.preventDefault(); closeDialog(activeDialog); return; }
@@ -1559,7 +1802,7 @@ function setupInstallPrompt() {
   if (!WEB_DIRECT || isStandalone() || localStorage.getItem("kbt-install-dismissed")) return;
   const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
   const isSafari = /safari/i.test(navigator.userAgent) && !/crios|fxios|edgios/i.test(navigator.userAgent);
-  if (!isIOS || !isSafari || !_bearer()) return;
+  if (!isIOS || !isSafari || (!_bearer() && !webImportRecord())) return;
   const sheet = $("installSheet"), backdrop = $("installBackdrop");
   const close = () => {
     closeDialog(sheet);

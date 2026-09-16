@@ -334,7 +334,7 @@ main{padding:4px 18px 40px}
 
 /* ---------- Safari 登录与主屏幕安装 ---------- */
 .auth-gate{position:fixed;inset:0;z-index:120;background:#f7f9fc;display:flex;flex-direction:column;
-  align-items:center;justify-content:center;text-align:center;padding:32px 24px calc(32px + env(safe-area-inset-bottom, 0px))}
+  align-items:center;justify-content:center;text-align:center;padding:32px 24px calc(32px + env(safe-area-inset-bottom, 0px));overflow-y:auto}
 .auth-gate[hidden]{display:none}
 .auth-mark{width:72px;height:72px;border-radius:18px;background:var(--accent);color:#fff;
   display:grid;place-items:center;box-shadow:0 12px 30px rgba(47,107,255,.2)}
@@ -343,10 +343,29 @@ main{padding:4px 18px 40px}
 .auth-gate>p{margin:0;color:var(--ink2);font-size:15px}
 .auth-login{margin-top:30px;width:min(100%,340px);min-height:52px;border:0;border-radius:8px;background:var(--accent);
   color:#fff;font-weight:700;font-size:16px;padding:0 18px;display:flex;align-items:center;justify-content:center;gap:12px}
+.auth-login[hidden]{display:none}
 .auth-login svg{width:19px;height:19px}
 .auth-login:hover{background:#225ce5}
 .auth-login:disabled{background:#9aa8bd;cursor:not-allowed}
 .auth-gate .auth-trust{font-size:12px;margin-top:16px;color:var(--ink3)}
+.web-setup{width:min(100%,480px);margin-top:22px;text-align:left}
+.web-setup[hidden]{display:none}
+.setup-steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:16px}
+.setup-steps li{display:grid;grid-template-columns:32px 1fr;gap:12px;align-items:start}
+.setup-number{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;background:var(--accent-soft);
+  color:var(--accent);font-size:13px;font-weight:750;font-variant-numeric:tabular-nums}
+.setup-steps strong{display:block;font-size:15px;line-height:1.4}
+.setup-steps p{margin:3px 0 0;color:var(--ink2);font-size:12.5px;line-height:1.55}
+.setup-copy,.setup-open{width:100%;min-height:50px;border-radius:8px;margin-top:14px;padding:0 16px;
+  display:flex;align-items:center;justify-content:center;gap:9px;font-weight:700;text-decoration:none}
+.setup-copy{border:0;background:var(--accent);color:#fff}
+.setup-copy:hover{background:#225ce5}.setup-copy.copied{background:var(--green)}
+.setup-open{border:1px solid var(--line2);background:#fff;color:var(--ink)}
+.setup-open:hover{border-color:var(--accent);color:var(--accent)}
+.setup-copy svg,.setup-open svg{width:19px;height:19px}
+.setup-help{margin-top:10px;border-top:1px solid var(--line);color:var(--ink2)}
+.setup-help summary{min-height:44px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:12.5px;color:var(--accent)}
+.setup-help p{margin:0;padding:0 4px 4px;font-size:12px;line-height:1.6}
 
 .install-backdrop{position:fixed;inset:0;z-index:89;background:rgba(12,20,35,.32)}
 .install-backdrop[hidden],.install-sheet[hidden]{display:none}
@@ -449,6 +468,11 @@ html{-webkit-text-size-adjust:100%}
   .weekstrip{display:none}
   .weekbar{border-bottom:1px solid var(--line)}
   .weekbar .add{margin-left:auto}
+
+  .auth-gate{justify-content:flex-start;padding-top:calc(24px + env(safe-area-inset-top, 0px))}
+  .auth-mark{width:58px;height:58px;border-radius:14px}.auth-mark svg{width:34px;height:34px}
+  .auth-gate h1{font-size:23px;margin-top:14px}.auth-gate>p{font-size:13.5px}
+  .web-setup{margin-top:18px}.setup-steps{gap:13px}
 
   /* The legacy grid stays available on larger screens only. */
   .sheet .thead,.sheet .trows{min-width:0;width:100%}

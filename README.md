@@ -1,14 +1,14 @@
 # cqie课表 · CQIE Schedule
 
-Android / iOS 课表查询 App: 内嵌官方登录页 → 捕获 OAuth token → 直连教务拉**本人**课表。
-无自建服务器、无第三方 SDK、数据只在你手机与教务服务器之间流动。
+Android / iOS 课表查询 App，并提供 Safari 主屏幕版。原生端通过官方 OAuth 直连教务；Safari 端在教务官网同源读取**本人**课表后仅把课表数据保存到本机。
+无自建账号中转服务器、无第三方 SDK，账号密码始终只在学校官方页面输入。
 
 | | |
 |---|---|
 | 平台 | Android 8.0+ (minSdk 26 / targetSdk 34)、iOS/iPadOS 15+ |
 | 数据源 | 重庆工程学院教务 `njw.cqie.edu.cn`(官方 OAuth2 + Bearer API) |
 | 模式 | 直连教务 · 单机单账号(他人使用 = 他自己登录自己的号) |
-| 隐私 | 只读本人课表; 本机只存 token(约 7 天, 自动静默续期), 不存密码 |
+| 隐私 | 只读本人课表；原生端 token 存本机安全区，Safari 端不导出 token，只存课表数据 |
 
 ## 功能
 
@@ -53,11 +53,11 @@ open ios/Kebiao.xcodeproj
 
 在 Xcode 的 `Signing & Capabilities` 里选择自己的 Team 后，即可运行到 iPhone；归档、TestFlight 和 IPA 分发步骤见 [`ios/README.md`](ios/README.md)。iOS 端把 token 存在 Keychain，不保存账号密码。
 
-## Safari 一体式链接（准备中）
+## Safari 一体式链接
 
-`prototype/` 已具备可安装 PWA 和 iPhone 单日课表界面，但当前不能作为正式登录入口。网页只直连学校官方接口，账号密码始终在学校页面输入。
+`prototype/` 已具备 iPhone 单日课表界面。由于学校拒绝外部 OAuth 回跳，而且学校网关的跨域响应会被浏览器拦截，Safari 首次使用需要设置一次“导入课表”书签：学生在学校官网正常登录后点击该书签，书签在官网同源读取当前学期课表，再通过不会发送到服务器的 URL 片段把压缩后的课表数据带回，并立即从地址栏清除。返回数据必须匹配本机生成的随机校验码，外部构造的链接不能覆盖课表；账号密码和登录凭证始终留在学校页面。
 
-实机验证已确认学校 OAuth 拒绝外部回跳地址，错误为 `Invalid redirect`。学校现有客户端只登记了 `https://njw.cqie.edu.cn/workspace/token-index`；除非校方把外部 HTTPS 地址加入白名单，否则网页不能完成登录闭环。不要用第三方服务器代收学校账号密码。当前 iPhone 使用方式是通过 Windows 和 Sideloadly 安装原生 App。
+实机验证已确认学校 OAuth 拒绝外部回跳地址，错误为 `Invalid redirect`。学校现有客户端只登记了 `https://njw.cqie.edu.cn/workspace/token-index`，因此网页不能实现零设置自动回跳。书签桥接只导入渲染所需的当前学期课表数据，不导出 token；Windows + Sideloadly 原生安装仍是另一种可用方式。不要用第三方服务器代收学校账号密码。
 
 ## 合规边界
 

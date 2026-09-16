@@ -345,6 +345,7 @@ main{padding:4px 18px 40px}
   color:#fff;font-weight:700;font-size:16px;padding:0 18px;display:flex;align-items:center;justify-content:center;gap:12px}
 .auth-login svg{width:19px;height:19px}
 .auth-login:hover{background:#225ce5}
+.auth-login:disabled{background:#9aa8bd;cursor:not-allowed}
 .auth-gate .auth-trust{font-size:12px;margin-top:16px;color:var(--ink3)}
 
 .install-backdrop{position:fixed;inset:0;z-index:89;background:rgba(12,20,35,.32)}

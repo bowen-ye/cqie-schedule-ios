@@ -5,7 +5,7 @@ Android / iOS 课表查询 App: 内嵌官方登录页 → 捕获 OAuth token →
 
 | | |
 |---|---|
-| 平台 | Android 8.0+ (minSdk 26 / targetSdk 34)、iOS/iPadOS 15+、Safari PWA（登录回跳待校方白名单验证） |
+| 平台 | Android 8.0+ (minSdk 26 / targetSdk 34)、iOS/iPadOS 15+ |
 | 数据源 | 重庆工程学院教务 `njw.cqie.edu.cn`(官方 OAuth2 + Bearer API) |
 | 模式 | 直连教务 · 单机单账号(他人使用 = 他自己登录自己的号) |
 | 隐私 | 只读本人课表; 本机只存 token(约 7 天, 自动静默续期), 不存密码 |
@@ -55,9 +55,9 @@ open ios/Kebiao.xcodeproj
 
 ## Safari 一体式链接（准备中）
 
-`prototype/` 已具备可安装 PWA、官方登录入口和 iPhone 单日课表界面。网页只直连学校官方接口，账号密码始终在学校页面输入。
+`prototype/` 已具备可安装 PWA 和 iPhone 单日课表界面，但当前不能作为正式登录入口。网页只直连学校官方接口，账号密码始终在学校页面输入。
 
-学校现有 OAuth 客户端把正式回跳地址配置为 `https://njw.cqie.edu.cn/workspace/token-index`。因此，把网页部署成链接前，必须先用真实学校账号确认外部 HTTPS 回跳地址是否在白名单中；未验证前不要对外宣称网页登录闭环可用，也不要用第三方服务器代收学校账号密码。
+实机验证已确认学校 OAuth 拒绝外部回跳地址，错误为 `Invalid redirect`。学校现有客户端只登记了 `https://njw.cqie.edu.cn/workspace/token-index`；除非校方把外部 HTTPS 地址加入白名单，否则网页不能完成登录闭环。不要用第三方服务器代收学校账号密码。当前 iPhone 使用方式是通过 Windows 和 Sideloadly 安装原生 App。
 
 ## 合规边界
 

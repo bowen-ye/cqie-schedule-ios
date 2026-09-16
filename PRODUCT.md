@@ -24,11 +24,11 @@ The product reads the student's official timetable but owns the presentation lay
 
 ## Operating Context
 
-The intended flow is a single Safari link, authentication on the school's official CAS page, return to the schedule, and optional installation to the iPhone home screen. The school's external OAuth callback allowlist still requires a real-account check before this flow can be considered complete. Account credentials remain on official school pages. Timetable and OAuth tokens stay on the student's device.
+The intended Safari flow is blocked because the school's OAuth client rejects external callback URLs. Until the school adds an approved callback, iPhone users must install the native wrapper, which safely intercepts the school's registered callback. Account credentials remain on official school pages. Timetable and OAuth tokens stay on the student's device.
 
 ## Capabilities and Constraints
 
-- Official CAS/OAuth login and direct read-only timetable API access; the external web callback remains a pre-release verification item.
+- Official CAS/OAuth login and direct read-only timetable API access in the native wrappers; external web callbacks are confirmed blocked by the school's allowlist.
 - Week, today, next-class, course details, offline cache, and manual entries.
 - iOS requires the user to perform Safari's final Share > Add to Home Screen action; websites cannot trigger it automatically.
 - Mobile schedules must never overlay course content. True conflicts remain visible and explicitly identified.

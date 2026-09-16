@@ -87,6 +87,8 @@ const WEB_OAUTH = {
   tokenKey: "kbt-web-oauth-v1",
   stateKey: "kbt-web-oauth-state",
 };
+// The school currently rejects every external callback URL for personal-prod.
+const WEB_OAUTH_CALLBACK_ALLOWED = false;
 /* 与 server.py 裁剪一致: 只回传渲染所需字段(原始行 150+ 键, 裁掉省内存) */
 const KEEP = ["courseName", "courseCode", "classNbr", "credit", "campusName", "roomName",
   "roomLabel", "instructorName", "courseDepartmentName", "weekDay", "periodFormat",
@@ -146,6 +148,16 @@ function randomState() {
   return Array.from(bytes, (n) => n.toString(16).padStart(2, "0")).join("");
 }
 function startWebLogin(force) {
+  if (!WEB_OAUTH_CALLBACK_ALLOWED) {
+    const button = $("authLoginBtn");
+    $("authGate").hidden = false;
+    $("authMessage").textContent = "学校暂未开放外部网页登录，请使用 iPhone App";
+    if (button) {
+      button.disabled = true;
+      button.querySelector("span").textContent = "网页登录暂不可用";
+    }
+    return;
+  }
   const state = randomState();
   sessionStorage.setItem(WEB_OAUTH.stateKey, state);
   const query = new URLSearchParams({
@@ -1262,7 +1274,14 @@ function showLoginNeed(d) {
   if (NATIVE) {
     if (WEB_DIRECT) {
       $("authGate").hidden = false;
-      $("authMessage").textContent = "登录后自动整理你的个人课表";
+      $("authMessage").textContent = WEB_OAUTH_CALLBACK_ALLOWED
+        ? "登录后自动整理你的个人课表"
+        : "学校暂未开放外部网页登录，请使用 iPhone App";
+      if (!WEB_OAUTH_CALLBACK_ALLOWED) {
+        const button = $("authLoginBtn");
+        button.disabled = true;
+        button.querySelector("span").textContent = "网页登录暂不可用";
+      }
       return;
     }
     $("sheet").innerHTML = `<div class="blank"><div class="big">${STATUS_ICON.key}</div>尚未登录教务账号` +

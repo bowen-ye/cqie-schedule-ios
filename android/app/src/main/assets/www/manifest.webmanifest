@@ -4,7 +4,7 @@
   "description": "重庆工程学院个人课表",
   "start_url": "./",
   "scope": "./",
-  "display": "browser",
+  "display": "standalone",
   "background_color": "#f4f6fb",
   "theme_color": "#ffffff",
   "orientation": "portrait-primary",

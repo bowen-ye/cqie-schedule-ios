@@ -29,6 +29,10 @@ const LS = {
 };
 const CACHE_MAX_AGE = 7 * 864e5; // 课表离线缓存最长 7 天; 有网时后台总会刷新
 const REFRESH_COOLDOWN = 5 * 60e3; // 打开页自动静默刷新的最小间隔 5 分钟
+const HOME_INSTALL_SESSION_KEY = "kbt-home-install-preparing";
+const HOME_INSTALL_DISMISSED_KEY = "kbt-home-install-dismissed-v2";
+const HOME_TRANSFER_PREFIX = "CQIE-SCHEDULE-V2:";
+const HOME_URL_PAYLOAD_LIMIT = 60000;
 
 const S = {
   account: null,
@@ -73,7 +77,7 @@ const APP_PLATFORM = (() => {
     return window.Android.platform();
   } catch (e) { return ""; }
 })();
-const WEB_DIRECT = !APP_PLATFORM && (location.protocol === "https:" || new URLSearchParams(location.search).has("direct") || /^#(?:data|bridge)=/.test(location.hash));
+const WEB_DIRECT = !APP_PLATFORM && (location.protocol === "https:" || new URLSearchParams(location.search).has("direct") || /^#(?:data|home|bridge)=/.test(location.hash));
 const NATIVE_PLATFORM = APP_PLATFORM || (WEB_DIRECT ? "web" : "");
 const NATIVE = !!NATIVE_PLATFORM;
 
@@ -90,6 +94,8 @@ const KEEP = ["courseName", "courseCode", "classNbr", "credit", "campusName", "r
   "teachingWeekFormat", "teachingWeek", "period"];
 
 let _tok = null;
+let _homeTransferLaunch = false;
+let _pendingHomePayload = "";
 function webRedirectUri() {
   return location.origin + location.pathname;
 }
@@ -98,6 +104,25 @@ function bytesFromBase64(value) {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
+}
+async function decompressGzipLimited(bytes, maxBytes) {
+  const reader = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip")).getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error("payload too large");
+    }
+    chunks.push(value);
+  }
+  const output = new Uint8Array(total);
+  let offset = 0;
+  chunks.forEach((chunk) => { output.set(chunk, offset); offset += chunk.byteLength; });
+  return output;
 }
 function webBridgeNonce(create) {
   try {
@@ -147,26 +172,37 @@ function normalizeImportedRows(rows) {
 }
 async function readBridgePayload() {
   const params = new URLSearchParams(location.hash.slice(1));
-  const payload = params.get("data");
+  const bridgePayload = params.get("data");
+  const homeMarker = params.get("home");
+  const homePayload = homeMarker === "clipboard" && _pendingHomePayload ? _pendingHomePayload : homeMarker;
+  const payload = bridgePayload || homePayload;
   const legacy = params.get("bridge");
   if (!payload && !legacy) return null;
+  const isHomeTransfer = !!homeMarker;
+  if (isHomeTransfer) _homeTransferLaunch = true;
   // Fragment never reaches the hosting server. Remove it before any other request.
   history.replaceState({}, document.title, location.pathname + location.search);
   if (!payload) return { error: "导入代码已更新，请重新复制书签代码后再试" };
   if (payload.length > 200000) return { error: "课表数据过大，无法安全导入" };
+  if (isHomeTransfer && !isStandalone()) {
+    return { error: "请从刚添加的主屏幕图标打开课表" };
+  }
   try {
     const mode = payload.charAt(0);
     let bytes = bytesFromBase64(payload.slice(1));
     if (mode === "g") {
       if (typeof DecompressionStream !== "function") throw new Error("unsupported gzip");
-      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-      bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+      bytes = await decompressGzipLimited(bytes, 5 * 1024 * 1024);
     } else if (mode !== "u") throw new Error("invalid encoding");
     if (bytes.byteLength > 5 * 1024 * 1024) throw new Error("payload too large");
     const data = JSON.parse(new TextDecoder().decode(bytes));
+    delete data.__homeTransfer;
+    delete data.__importedAt;
+    delete data.__adoptNonce;
     const sid = data && data.s && String(data.s.i || "");
     const expectedNonce = webBridgeNonce(false);
-    if (!expectedNonce || data.n !== expectedNonce) {
+    const validNonce = typeof data.n === "string" && /^[a-f0-9]{32}$/.test(data.n);
+    if (!validNonce || (!isHomeTransfer && (!expectedNonce || data.n !== expectedNonce))) {
       return { error: "导入校验失败，请重新复制“导入课表”书签代码后再试" };
     }
     const validRows = Array.isArray(data.r) && data.r.length <= 500 && data.r.every((row) => row && typeof row === "object" && !Array.isArray(row));
@@ -185,6 +221,23 @@ async function readBridgePayload() {
       throw new Error("invalid metadata");
     }
     data.r = normalizeImportedRows(data.r);
+    if (isHomeTransfer) {
+      const importedAt = +data.h;
+      if (!Number.isSafeInteger(importedAt) || importedAt < 1700000000000 || importedAt > Date.now() + 864e5) {
+        throw new Error("invalid transfer time");
+      }
+      if (expectedNonce && data.n !== expectedNonce) {
+        return { error: "主屏幕课表与本机不匹配，请从课表页重新生成入口" };
+      }
+      const existing = webImportRecord();
+      if (existing && !expectedNonce) {
+        return { error: "主屏幕课表校验信息缺失，请从课表页重新生成入口" };
+      }
+      if (existing && +existing.importedAt >= importedAt) return { skip: true, homeTransfer: true };
+      data.__homeTransfer = true;
+      data.__importedAt = importedAt;
+      data.__adoptNonce = !expectedNonce;
+    }
     return data;
   } catch (e) {
     return { error: "导入信息无效，请重新登录教务系统后再试" };
@@ -192,7 +245,7 @@ async function readBridgePayload() {
 }
 function saveWebSchedule(data) {
   const sid = String(data.s.i);
-  const importedAt = Date.now();
+  const importedAt = data.__homeTransfer ? data.__importedAt : Date.now();
   let previousMeta = null;
   let accountChanged = false;
   try {
@@ -247,6 +300,7 @@ function saveWebSchedule(data) {
     [fetchedKey, String(importedAt)],
     [LS.webImport, JSON.stringify({ importedAt, sessionId: sid })],
   ];
+  if (data.__adoptNonce) writes.unshift([LS.webNonce, data.n]);
   const previousValues = writes.map(([key]) => [key, localStorage.getItem(key)]);
   try {
     writes.forEach(([key, value]) => localStorage.setItem(key, value));
@@ -282,6 +336,7 @@ async function handleWebScheduleBridge() {
   if (!WEB_DIRECT) return false;
   const data = await readBridgePayload();
   if (!data) return false;
+  if (data.skip) return true;
   if (data.error) {
     sessionStorage.setItem("kbt-bridge-error", data.error);
     return false;
@@ -293,7 +348,8 @@ async function handleWebScheduleBridge() {
     return false;
   }
   sessionStorage.removeItem("kbt-bridge-error");
-  sessionStorage.setItem("kbt-bridge-success", "1");
+  if (!data.__homeTransfer) localStorage.removeItem(HOME_INSTALL_DISMISSED_KEY);
+  sessionStorage.setItem("kbt-bridge-success", data.__homeTransfer ? "home" : "official");
   return true;
 }
 async function runScheduleBookmark(target, keep, nonce) {
@@ -382,12 +438,153 @@ function bookmarkletCode() {
   if (!nonce) throw new Error("无法创建本机导入校验码");
   return "javascript:(" + runner + ")(" + JSON.stringify(webRedirectUri()) + "," + JSON.stringify(KEEP) + "," + JSON.stringify(nonce) + ");void 0";
 }
+function bytesToBase64(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 32768) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 32768));
+  }
+  return btoa(binary);
+}
+async function packHomeSchedule(data) {
+  const raw = new TextEncoder().encode(JSON.stringify(data));
+  let mode = "u";
+  let bytes = raw;
+  if (typeof CompressionStream === "function" && typeof DecompressionStream === "function") {
+    const stream = new Blob([raw]).stream().pipeThrough(new CompressionStream("gzip"));
+    bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+    mode = "g";
+  }
+  const packed = mode + bytesToBase64(bytes);
+  if (packed.length > 200000) throw new Error("课表数据过大，无法生成主屏幕入口");
+  return packed;
+}
+function packHomeSchedulePlain(data) {
+  const packed = "u" + bytesToBase64(new TextEncoder().encode(JSON.stringify(data)));
+  if (packed.length > 200000) throw new Error("课表数据过大，无法生成主屏幕入口");
+  return packed;
+}
+function currentHomeSnapshot() {
+  const record = webImportRecord();
+  const meta = cacheLoadMeta();
+  if (!record || !meta) throw new Error("请先成功导入课表");
+  const sid = String(record.sessionId || "");
+  const session = Array.isArray(meta.sessions)
+    ? meta.sessions.find((item) => String(item.sessionId) === sid)
+    : null;
+  const rows = cacheLoadRows(sid);
+  const nonce = webBridgeNonce(false);
+  const importedAt = +record.importedAt;
+  if (!session || !Array.isArray(rows) || !/^[a-f0-9]{32}$/.test(nonce) || !Number.isSafeInteger(importedAt)) {
+    throw new Error("本机课表不完整，请重新导入后再试");
+  }
+  const times = [];
+  (meta.timesAuto === true && Array.isArray(meta.times) ? meta.times : []).forEach((range, index) => {
+    const match = String(range || "").match(/^(\d{1,2}:[0-5]\d)-(\d{1,2}:[0-5]\d)$/);
+    if (match && index < 24) times.push({ period: index + 1, start: match[1], end: match[2] });
+  });
+  return {
+    v: 2,
+    n: nonce,
+    h: importedAt,
+    a: "",
+    s: { i: sid, y: String(session.yearAndTerm || "当前学期") },
+    w: Number.isInteger(+meta.curWeek) ? +meta.curWeek : null,
+    t: times,
+    r: rows,
+  };
+}
+async function copyText(value) {
+  try {
+    await navigator.clipboard.writeText(value);
+    return;
+  } catch (e) { }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) throw new Error("无法复制课表导入码");
+}
+async function importHomeCode(raw, button) {
+  const code = String(raw || "").trim();
+  if (!code.startsWith(HOME_TRANSFER_PREFIX)) throw new Error("剪贴板里没有 cqie课表导入码");
+  const packed = code.slice(HOME_TRANSFER_PREFIX.length);
+  if (!packed || packed.length > 200000) throw new Error("课表导入码无效或过大");
+  const label = button && (button.querySelector("span") || button);
+  const previous = label && label.textContent;
+  if (button) { button.disabled = true; label.textContent = "正在导入…"; }
+  try {
+    _pendingHomePayload = packed;
+    history.replaceState({}, document.title, location.pathname + location.search + "#home=clipboard");
+    const imported = await handleWebScheduleBridge();
+    if (!imported) throw new Error(sessionStorage.getItem("kbt-bridge-error") || "课表导入码校验失败");
+    location.reload();
+  } catch (e) {
+    if (button) { button.disabled = false; label.textContent = previous; }
+    throw e;
+  } finally {
+    _pendingHomePayload = "";
+  }
+}
+async function importHomeClipboard(button) {
+  try {
+    if (!navigator.clipboard || typeof navigator.clipboard.readText !== "function") throw new Error("当前浏览器不能自动读取剪贴板");
+    await importHomeCode(await navigator.clipboard.readText(), button);
+  } catch (e) {
+    toast((e && e.message) || "无法读取剪贴板，请使用手动粘贴", true);
+    const details = $("homeManualPaste");
+    if (details && !$("authGate").hidden) {
+      details.open = true;
+      setTimeout(() => $("homeCodeInput").focus(), 0);
+    } else {
+      const manual = window.prompt("长按输入框，粘贴 cqie课表导入码");
+      if (manual) {
+        try { await importHomeCode(manual, button); }
+        catch (manualError) { toast((manualError && manualError.message) || "课表导入码无效", true); }
+      }
+    }
+  }
+}
+async function openHomeInstallPage(button) {
+  const label = button.querySelector("span");
+  const previousLabel = label.textContent;
+  button.disabled = true;
+  label.textContent = "正在准备…";
+  try {
+    const snapshot = currentHomeSnapshot();
+    await copyText(HOME_TRANSFER_PREFIX + packHomeSchedulePlain(snapshot));
+    const packed = await packHomeSchedule(snapshot);
+    const bytes = new Uint8Array(12);
+    crypto.getRandomValues(bytes);
+    const handoff = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+    sessionStorage.setItem(HOME_INSTALL_SESSION_KEY, handoff);
+    if (sessionStorage.getItem(HOME_INSTALL_SESSION_KEY) !== handoff) throw new Error("Safari 临时存储不可用");
+    const target = new URL("home-install.html", location.href);
+    const hash = new URLSearchParams({ setup: handoff });
+    if (packed.length <= HOME_URL_PAYLOAD_LIMIT) hash.set("home", packed);
+    target.hash = hash.toString();
+    localStorage.setItem(HOME_INSTALL_DISMISSED_KEY, "1");
+    location.assign(target.href);
+  } catch (e) {
+    button.disabled = false;
+    label.textContent = previousLabel;
+    toast((e && e.message) || "无法生成主屏幕入口，请稍后重试", true);
+  }
+}
 function showWebSetup(message) {
-  const gate = $("authGate"), setup = $("webSetup"), login = $("authLoginBtn");
+  const gate = $("authGate"), setup = $("webSetup"), recovery = $("homeRecovery"), login = $("authLoginBtn");
+  const recovering = isStandalone();
   gate.hidden = false;
-  setup.hidden = false;
+  setup.hidden = recovering;
+  recovery.hidden = !recovering;
   login.hidden = true;
-  $("authMessage").textContent = message || sessionStorage.getItem("kbt-bridge-error") || "首次使用约 1 分钟，设置后可直接打开课表";
+  $("authMessage").textContent = message || sessionStorage.getItem("kbt-bridge-error") || (recovering
+    ? "主屏幕里还没有课表，请从 Safari 同步一次"
+    : "首次使用约 1 分钟，设置后可直接打开课表");
 }
 function startWebLogin() { showWebSetup(); }
 const WEB_BRIDGE = {
@@ -1214,7 +1411,7 @@ function closeDialog(container) {
   container.hidden = true;
   if (container.id === "installSheet") {
     $("installBackdrop").hidden = true;
-    localStorage.setItem("kbt-install-dismissed", "1");
+    localStorage.setItem(HOME_INSTALL_DISMISSED_KEY, "1");
   }
   if (container.id === "addMask") S._editing = null;
   if (activeDialog === container) activeDialog = null;
@@ -1542,6 +1739,9 @@ function openAccount() {
   $("acctSize").textContent = fmtBytes(localBytes());
   const log = $("acctLogout");
   log.hidden = !NATIVE;
+  const homeButton = $("acctHome");
+  homeButton.hidden = !imported;
+  homeButton.querySelector("span").textContent = isStandalone() ? "从剪贴板更新课表" : "同步到主屏幕";
   log.classList.remove("armed");
   log.textContent = "退出并更换账号";
   $("acctTip").textContent = imported
@@ -1585,6 +1785,14 @@ function logoutAccount() {
 /* ---------------- 启动 ---------------- */
 async function init() {
   await handleWebScheduleBridge();
+  if (sessionStorage.getItem("kbt-bridge-error") && !webImportRecord()) {
+    localStorage.removeItem(LEGACY_WEB_TOKEN_KEY);
+    _tok = null;
+    measureHeights();
+    bindUI();
+    showWebSetup();
+    return;
+  }
   if (WEB_DIRECT && !webImportRecord()) {
     localStorage.removeItem(LEGACY_WEB_TOKEN_KEY);
     _tok = null;
@@ -1632,20 +1840,24 @@ async function init() {
     $("acct").textContent = S.account ? `账号 ${S.account}` : "已导入";
     const badge = document.querySelector(".badge");
     if (badge) badge.textContent = "本机课表 · 只读";
-    $("refreshBtn").title = "去教务系统更新课表";
-    $("refreshBtn").setAttribute("aria-label", "去教务系统更新课表");
+    const standalone = isStandalone();
+    $("refreshBtn").title = standalone ? "从 Safari 同步新课表" : "去教务系统更新课表";
+    $("refreshBtn").setAttribute("aria-label", standalone ? "从 Safari 同步新课表" : "去教务系统更新课表");
     const importedAt = new Date(+webImport.importedAt || Date.now());
     const importedLabel = importedAt.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
     const bridgeError = sessionStorage.getItem("kbt-bridge-error");
     $("timeHint").textContent = bridgeError
       ? `本次更新失败，仍显示 ${importedLabel} 导入的课表 · 点右上角可重试`
-      : `课表由学校教务系统导入于 ${importedLabel} · 点右上角刷新可重新导入`;
+      : standalone
+        ? `课表保存于本机 · 导入时间 ${importedLabel} · 点右上角可从 Safari 同步更新`
+        : `课表由学校教务系统导入于 ${importedLabel} · 点右上角刷新可重新导入`;
     cacheSaveMeta();
     startTick();
     setupInstallPrompt();
-    if (sessionStorage.getItem("kbt-bridge-success")) {
+    const bridgeSuccess = sessionStorage.getItem("kbt-bridge-success");
+    if (bridgeSuccess) {
       sessionStorage.removeItem("kbt-bridge-success");
-      toast("课表已从教务系统安全导入");
+      toast(bridgeSuccess === "home" ? "主屏幕课表已恢复" : "课表已从教务系统安全导入");
     } else if (bridgeError) {
       sessionStorage.removeItem("kbt-bridge-error");
       toast(bridgeError, true);
@@ -1752,6 +1964,11 @@ function bindUI() {
   $("todayBtn").onclick = () => { if (S.curWeek && S.sessionId === S.activeId) setWeek(S.curWeek); };
   $("refreshBtn").onclick = () => {
     if (WEB_DIRECT && webImportRecord()) {
+      if (isStandalone()) {
+        openAccount();
+        toast("先在 Safari 重新导入，再点“从剪贴板更新课表”");
+        return;
+      }
       toast("打开教务后，点击“导入课表”书签");
       setTimeout(() => location.assign(OFFICIAL_WORKSPACE), 900);
       return;
@@ -1765,6 +1982,9 @@ function bindUI() {
   $("acctBtn").onclick = openAccount;
   $("acct").onclick = openAccount;
   $("acctClear").onclick = clearCacheAccount;
+  $("acctHome").onclick = () => isStandalone()
+    ? importHomeClipboard($("acctHome"))
+    : openHomeInstallPage($("acctHome"));
   $("acctLogout").onclick = logoutAccount;
   $("authLoginBtn").onclick = () => startWebLogin(false);
   $("copyBridgeBtn").onclick = async () => {
@@ -1783,6 +2003,14 @@ function bindUI() {
       }
     }
   };
+  $("homePasteBtn").onclick = () => importHomeClipboard($("homePasteBtn"));
+  $("homeCodeBtn").onclick = async () => {
+    try {
+      await importHomeCode($("homeCodeInput").value, $("homeCodeBtn"));
+    } catch (e) {
+      toast((e && e.message) || "课表导入码无效", true);
+    }
+  };
   document.addEventListener("keydown", (event) => {
     if (!activeDialog) return;
     if (event.key === "Escape") { event.preventDefault(); closeDialog(activeDialog); return; }
@@ -1799,7 +2027,7 @@ function isStandalone() {
   return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
 }
 function setupInstallPrompt() {
-  if (!WEB_DIRECT || isStandalone() || localStorage.getItem("kbt-install-dismissed")) return;
+  if (!WEB_DIRECT || _homeTransferLaunch || isStandalone() || localStorage.getItem(HOME_INSTALL_DISMISSED_KEY)) return;
   const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
   const isSafari = /safari/i.test(navigator.userAgent) && !/crios|fxios|edgios/i.test(navigator.userAgent);
   if (!isIOS || !isSafari || (!_bearer() && !webImportRecord())) return;
@@ -1807,11 +2035,11 @@ function setupInstallPrompt() {
   const close = () => {
     closeDialog(sheet);
     backdrop.hidden = true;
-    localStorage.setItem("kbt-install-dismissed", "1");
+    localStorage.setItem(HOME_INSTALL_DISMISSED_KEY, "1");
   };
   setTimeout(() => { backdrop.hidden = false; showDialog(sheet); }, 650);
   $("installClose").onclick = close;
-  $("installDone").onclick = close;
+  $("installDone").onclick = () => openHomeInstallPage($("installDone"));
   backdrop.onclick = close;
 }
 

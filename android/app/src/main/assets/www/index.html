@@ -55,6 +55,31 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       <p>点击 Safari 分享按钮并选择“添加书签”；再打开书签列表，点“编辑”，选择刚保存的书签，把网址全部替换成导入代码。</p>
     </details>
   </div>
+  <div class="web-setup" id="homeRecovery" hidden>
+    <button class="setup-copy" id="homePasteBtn" type="button">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h6M9 3h6v4H9zM7 5H5v16h14V5h-2M8 12h8M8 16h6"/></svg>
+      <span>从剪贴板导入课表</span>
+    </button>
+    <ol class="setup-steps">
+      <li>
+        <span class="setup-number">1</span>
+        <div><strong>回到 Safari 里的课表</strong><p>如果 Safari 仍能看到课表，不需要重新登录或导入。</p></div>
+      </li>
+      <li>
+        <span class="setup-number">2</span>
+        <div><strong>点击“同步到主屏幕”</strong><p>页面会复制一份不含账号和登录凭证的课表导入码。</p></div>
+      </li>
+      <li>
+        <span class="setup-number">3</span>
+        <div><strong>回到这个桌面图标</strong><p>点击上面的“从剪贴板导入课表”，以后打开就会直接显示。</p></div>
+      </li>
+    </ol>
+    <details class="setup-help" id="homeManualPaste">
+      <summary>无法自动读取？手动粘贴</summary>
+      <textarea id="homeCodeInput" class="home-code-input" rows="3" placeholder="长按这里，粘贴课表导入码"></textarea>
+      <button class="setup-open home-code-submit" id="homeCodeBtn" type="button"><span>导入粘贴的课表</span></button>
+    </details>
+  </div>
   <button class="auth-login" id="authLoginBtn" type="button" hidden>
     <span>前往官方登录</span>
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
@@ -140,10 +165,10 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
     <svg viewBox="0 0 24 24"><path d="M12 16V3M8 7l4-4 4 4M5 12v8h14v-8"/></svg>
   </div>
   <div>
-    <h2 id="installTitle">放到主屏幕</h2>
-    <p>点击 Safari 的分享按钮，再选择“添加到主屏幕”。</p>
+    <h2 id="installTitle">创建主屏幕入口</h2>
+    <p>先生成专用入口，再从下一页使用 Safari“分享 → 添加到主屏幕”。</p>
   </div>
-  <button class="install-done" id="installDone" type="button">知道了</button>
+  <button class="install-done" id="installDone" type="button"><span>生成主屏幕入口</span></button>
 </div>
 <div class="install-backdrop" id="installBackdrop" hidden></div>
 
@@ -218,6 +243,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
       <div class="acct-row"><span class="k">本地缓存</span><span class="v" id="acctSize">—</span></div>
     </div>
     <p class="dim" id="acctTip"></p>
+    <button id="acctHome" class="primary acct-home" hidden><span>同步到主屏幕</span></button>
     <div class="fbtns acct-btn">
       <button id="acctClear" class="ghost">清除缓存数据</button>
       <span class="sp"></span>

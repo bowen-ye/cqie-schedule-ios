@@ -14,6 +14,7 @@ set "DST=%ROOT%android\app\src\main\assets\www"
 echo == 1/3 同步 H5 资源 (prototype -^> assets/www) ==
 if not exist "%DST%" mkdir "%DST%"
 copy /Y "%SRC%\index.html" "%DST%\" >nul
+copy /Y "%SRC%\home-install.html" "%DST%\" >nul
 copy /Y "%SRC%\style.css"  "%DST%\" >nul
 copy /Y "%SRC%\app.js"     "%DST%\" >nul
 copy /Y "%SRC%\manifest.webmanifest" "%DST%\" >nul

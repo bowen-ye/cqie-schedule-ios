@@ -24,14 +24,15 @@ The product reads the student's official timetable but owns the presentation lay
 
 ## Operating Context
 
-The school's OAuth client rejects external callback URLs, and its duplicate cross-origin headers make browser API calls fail. The public Safari fallback therefore uses a one-time, user-installed bookmarklet: the student signs in on the official site, invokes the bookmark, and the bookmark reads the current-term schedule on that same origin. It returns only compressed schedule data in a URL fragment that is cleared immediately and accepted only when its device-generated nonce matches. The home-screen entry opens in Safari so it shares the same local storage. Account credentials and tokens never leave official school pages.
+The school's OAuth client rejects external callback URLs, and its duplicate cross-origin headers make browser API calls fail. The public Safari fallback therefore uses a one-time, user-installed bookmarklet: the student signs in on the official site, invokes the bookmark, and the bookmark reads the current-term schedule on that same origin. It returns only compressed schedule data in a URL fragment that is cleared immediately and accepted only when its device-generated nonce matches. Because iOS isolates Home Screen Web App storage from Safari, installation proceeds through a dedicated no-manifest page and a sanitized clipboard transfer. A URL-fragment snapshot provides an automatic fast path where iOS preserves the installed URL; a user-triggered clipboard import is the reliable fallback and update path. Account identifiers, credentials, and tokens are excluded from both transfer forms.
 
 ## Capabilities and Constraints
 
 - Official CAS/OAuth login and direct read-only timetable API access in the native wrappers.
 - Safari fallback through a one-time local bookmarklet because external OAuth callbacks and browser API calls are blocked by the school's configuration.
 - Week, today, next-class, course details, offline cache, and manual entries.
-- iOS requires the user to perform Safari's final Share > Add to Home Screen action; websites cannot trigger it automatically. The web manifest uses browser display mode so the home-screen entry shares Safari's imported schedule data.
+- iOS requires the user to perform Safari's final Share > Add to Home Screen action; websites cannot trigger it automatically. The user must add the generated installation page, not the ordinary timetable page.
+- Safari and an installed iOS Web App cannot continuously share local schedule storage. After a later timetable import, the user copies a fresh transfer from Safari and imports it into the existing Home Screen app.
 - Mobile schedules must never overlay course content. True conflicts remain visible and explicitly identified.
 - The public web surface is deployed, while native App Store/TestFlight distribution remains deferred.
 

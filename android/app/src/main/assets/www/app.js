@@ -49,12 +49,18 @@ const S = {
 
 const $ = (id) => document.getElementById(id);
 
-/* ---------------- 直连模式 (Android 壳) ----------------
- * window.Android 由原生注入: 浏览器(原型/手机网页)里不存在 -> 仍走后端 server.py;
- * APK 里存在 -> 直接拿 Bearer token 打教务接口, 响应形状与 server.py 完全一致。
+/* ---------------- 直连模式 (Android / iOS 壳) ----------------
+ * window.Android 是两端共用的原生桥名称: 浏览器里不存在 -> 仍走后端 server.py;
+ * App 里存在 -> 直接拿 Bearer token 打教务接口, 响应形状与 server.py 完全一致。
+ * Android 桥返回同步值, iOS WKWebView 桥返回 Promise; 网络层同时兼容两种形式。
  */
-const NATIVE = !!(typeof window !== "undefined" && window.Android &&
-  window.Android.platform && window.Android.platform() === "android");
+const NATIVE_PLATFORM = (() => {
+  try {
+    if (typeof window === "undefined" || !window.Android || !window.Android.platform) return "";
+    return window.Android.platform();
+  } catch (e) { return ""; }
+})();
+const NATIVE = NATIVE_PLATFORM === "android" || NATIVE_PLATFORM === "ios";
 
 const NJW = {
   timetable: "https://njw.cqie.edu.cn/api/timetable",
@@ -103,7 +109,7 @@ async function _njw(method, url, json) {
       } catch (e) {
         if (e && e.status) throw e;                       // 真·HTTP 错误(401 等)
         if (A && A.http) {                                // CORS/网络错 -> OkHttp 桥
-          const raw = A.http(method, url, t || "", json ? JSON.stringify(json) : "");
+          const raw = await Promise.resolve(A.http(method, url, t || "", json ? JSON.stringify(json) : ""));
           if (!raw) throw new Error("net:empty");
           if (raw.indexOf("__KBT_ERR__") === 0) {
             const st = parseInt(raw.slice(11).split("\n")[0], 10) || 0;
@@ -115,7 +121,7 @@ async function _njw(method, url, json) {
       return j;
     } catch (e) {
       if (e && e.status === 401 && k === 0 && A && A.ensureToken) {
-        const nt = A.ensureToken();                       // 阻塞: 先静默续期, 失败弹官方登录页
+        const nt = await Promise.resolve(A.ensureToken()); // 静默续期, 失败弹官方登录页
         if (nt) { _tok = nt; continue; }
       }
       throw e;
@@ -942,7 +948,9 @@ function showLoginNeed(d) {
       const A = _A();
       try {
         if (A && A.relogin) A.relogin();                    // 非阻塞弹官方登录页, 成功原生自动刷新
-        else if (A && A.ensureToken) { A.ensureToken(); location.reload(); }
+        else if (A && A.ensureToken) {
+          Promise.resolve(A.ensureToken()).then((t) => { if (t) location.reload(); });
+        }
       } catch (e) { }
     };
     return;
@@ -1030,17 +1038,18 @@ function logoutAccount() {
     return;
   }
   const A = _A();
-  try { if (A && A.logout) A.logout(); } catch (e) { }
+  let done = Promise.resolve();
+  try { if (A && A.logout) done = Promise.resolve(A.logout()); } catch (e) { }
   // A.logout() 原生侧: 清 token + 官方 CAS cookie(没有它, 换号会被 SSO 静默登回原号)
   _tok = null;
   S.account = null;
   wipeLocal();
-  location.reload();   // 重进即"未登录"落地页(上方短路径, 不再自动弹登录), 点「去官方登录页」登录/换号
+  done.finally(() => location.reload()); // iOS 等原生异步清理完再重载
 }
 
 /* ---------------- 启动 ---------------- */
 async function init() {
-  if (NATIVE) {                       // APK 壳里的小调整
+  if (NATIVE) {                       // App 壳里的小调整
     const b = document.querySelector(".badge");
     if (b) b.textContent = "直连教务";
     document.title = "cqie课表";

@@ -7,6 +7,12 @@ android/build/
 android/app/build/
 android/local.properties
 *.apk
+ios/DerivedData/
+ios/build/
+*.xcarchive
+*.ipa
+*.xcuserstate
+xcuserdata/
 
 # Python 缓存/预览图
 __pycache__/

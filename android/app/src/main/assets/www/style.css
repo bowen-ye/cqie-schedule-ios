@@ -26,7 +26,7 @@ html{-webkit-tap-highlight-color:transparent}
 body{
   font-family:"Segoe UI","Microsoft YaHei",system-ui,-apple-system,sans-serif;
   background:var(--bg);color:var(--ink);
-  font-size:14px;
+  font-size:14px;padding-bottom:env(safe-area-inset-bottom, 0px);
 }
 button{font:inherit;cursor:pointer}
 select,input{font:inherit}
@@ -35,7 +35,7 @@ select,input{font:inherit}
 .topbar{
   position:sticky;top:0;z-index:20;
   display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
-  padding:8px 18px;background:#fff;border-bottom:1px solid var(--line);
+  padding:calc(8px + env(safe-area-inset-top, 0px)) 18px 8px;background:#fff;border-bottom:1px solid var(--line);
   box-shadow:0 1px 8px rgba(30,40,70,.05);
 }
 .brand{display:flex;align-items:center;gap:8px}
@@ -267,7 +267,8 @@ main{padding:4px 18px 40px}
 
 /* ---------- 弹窗 ---------- */
 .mask{position:fixed;inset:0;background:rgba(20,30,55,.42);z-index:50;
-  display:flex;align-items:center;justify-content:center;padding:20px}
+  display:flex;align-items:center;justify-content:center;
+  padding:20px 20px calc(20px + env(safe-area-inset-bottom, 0px))}
 .mask[hidden]{display:none}
 .modal{position:relative;background:#fff;border-radius:16px;max-width:640px;width:100%;
   max-height:86vh;overflow:auto;padding:22px 24px;box-shadow:0 20px 60px rgba(10,20,40,.3)}
@@ -316,7 +317,7 @@ html{-webkit-text-size-adjust:100%}
   main{padding:2px 6px 30px}
 
   /* 顶栏只留 学期/刷新/GitHub 一排; 今日大字等冗余小标签收掉, 更清爽 */
-  .topbar{padding:6px 10px;gap:6px}
+  .topbar{padding:calc(6px + env(safe-area-inset-top, 0px)) 10px 6px;gap:6px}
   .brand{gap:5px}
   .brand h1{font-size:16px}
   .iconbtn{width:27px;height:27px;font-size:13.5px}
@@ -369,7 +370,7 @@ html{-webkit-text-size-adjust:100%}
   .dr-time{flex-basis:62px}
   .hint{padding:0 2px}
 
-  .mask{padding:12px}
+  .mask{padding:12px 12px calc(12px + env(safe-area-inset-bottom, 0px))}
   .modal{padding:18px 16px;border-radius:14px;max-height:92vh}
   .fgrid{grid-template-columns:repeat(2,1fr);gap:0 10px}
   .dname{font-size:17px}

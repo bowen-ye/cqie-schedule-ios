@@ -16,6 +16,11 @@ if not exist "%DST%" mkdir "%DST%"
 copy /Y "%SRC%\index.html" "%DST%\" >nul
 copy /Y "%SRC%\style.css"  "%DST%\" >nul
 copy /Y "%SRC%\app.js"     "%DST%\" >nul
+copy /Y "%SRC%\manifest.webmanifest" "%DST%\" >nul
+copy /Y "%SRC%\service-worker.js" "%DST%\" >nul
+if not exist "%DST%\icons" mkdir "%DST%\icons"
+copy /Y "%SRC%\icons\icon-192.png" "%DST%\icons\" >nul
+copy /Y "%SRC%\icons\icon-512.png" "%DST%\icons\" >nul
 echo done.
 
 echo == 2/3 Gradle assembleRelease (R8 压缩) ==

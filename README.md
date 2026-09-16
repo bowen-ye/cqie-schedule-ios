@@ -5,7 +5,7 @@ Android / iOS 课表查询 App: 内嵌官方登录页 → 捕获 OAuth token →
 
 | | |
 |---|---|
-| 平台 | Android 8.0+ (minSdk 26 / targetSdk 34)、iOS/iPadOS 15+ |
+| 平台 | Android 8.0+ (minSdk 26 / targetSdk 34)、iOS/iPadOS 15+、Safari PWA（登录回跳待校方白名单验证） |
 | 数据源 | 重庆工程学院教务 `njw.cqie.edu.cn`(官方 OAuth2 + Bearer API) |
 | 模式 | 直连教务 · 单机单账号(他人使用 = 他自己登录自己的号) |
 | 隐私 | 只读本人课表; 本机只存 token(约 7 天, 自动静默续期), 不存密码 |
@@ -18,7 +18,7 @@ Android / iOS 课表查询 App: 内嵌官方登录页 → 捕获 OAuth token →
   - 作息时间表自动读教务官方 12 节
   - 点击任意空白格可**手动补录**课程/任务(虚线卡片, 存本机)
 - **离线秒开**: 最近学期课表缓存在本地, 断网也能看; 有网后台自动刷新
-- **手机一屏看全**: 窄屏周课表列宽自适应, 7 天整张铺满、无需左右滑动
+- **手机清晰排课**: 顶部保留七天概览，点选某天后以完整宽度逐门显示；同时段课程分别列出并标记“时间冲突”，绝不互相遮挡
 - **账号中心**(顶栏 👤): 查看当前账号 / 清除本地缓存 / **退出登录**(连官方 CAS 会话一起清, 回到「未登录」落地页, 点「去官方登录页」即可换号, 不被 SSO 静默登回原号)
 
 ## 目录
@@ -52,6 +52,12 @@ open ios/Kebiao.xcodeproj
 ```
 
 在 Xcode 的 `Signing & Capabilities` 里选择自己的 Team 后，即可运行到 iPhone；归档、TestFlight 和 IPA 分发步骤见 [`ios/README.md`](ios/README.md)。iOS 端把 token 存在 Keychain，不保存账号密码。
+
+## Safari 一体式链接（准备中）
+
+`prototype/` 已具备可安装 PWA、官方登录入口和 iPhone 单日课表界面。网页只直连学校官方接口，账号密码始终在学校页面输入。
+
+学校现有 OAuth 客户端把正式回跳地址配置为 `https://njw.cqie.edu.cn/workspace/token-index`。因此，把网页部署成链接前，必须先用真实学校账号确认外部 HTTPS 回跳地址是否在白名单中；未验证前不要对外宣称网页登录闭环可用，也不要用第三方服务器代收学校账号密码。
 
 ## 合规边界
 

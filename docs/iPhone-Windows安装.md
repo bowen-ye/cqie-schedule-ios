@@ -11,25 +11,26 @@
 
 免费 Apple ID 签名的 App 有效期为 7 天，需要定期连接同一台电脑刷新。正式长期使用仍建议后续通过 TestFlight 或 App Store 分发。
 
-## 安装 AltStore
+## 最简单：用 Sideloadly 直接安装
 
 1. 从 Apple 官网安装 Windows 版 iTunes 与 iCloud，不要使用 Microsoft Store 版本。
-2. 从 AltStore 官网下载并安装 AltServer for Windows。
+2. 从 Sideloadly 官网下载并安装 Windows 版 Sideloadly。
 3. 用数据线连接 iPhone，解锁后点“信任此电脑”。
-4. 打开 iTunes，为该 iPhone 开启“通过 Wi-Fi 与此 iPhone 同步”。
-5. 运行 AltServer，在系统托盘选择 **Install AltStore**，再选择你的 iPhone。
-6. 按 AltServer 提示输入用于免费签名的 Apple ID。
-7. 在 iPhone 的“设置 > 隐私与安全性 > 开发者模式”中开启开发者模式并按提示重启。
+4. 打开 Sideloadly，把 `cqie-schedule-iphone17-unsigned.ipa` 拖进去。
+5. 选择已连接的 iPhone，输入由手机使用者本人掌握的 Apple ID，然后点击 **Start**。
+6. 若 Apple ID 开了双重认证，按界面提示使用 Apple 的应用专用密码。
+7. 安装后，在 iPhone 的“设置 > 通用 > VPN 与设备管理”中信任该 Apple ID 对应的开发者。
+8. 在“设置 > 隐私与安全性 > 开发者模式”中开启开发者模式并按提示重启。
+9. 打开“cqie课表”，由手机使用者本人在学校官方页面登录。
 
-## 安装课表 IPA
+## 免费账号的限制
 
-1. 把 `cqie-schedule-unsigned.ipa` 保存到 iPhone 的“文件”App，或通过聊天/网盘传到“文件”。
-2. 打开 iPhone 上的 AltStore，进入 **My Apps**。
-3. 点击左上角 `+`，选择该 IPA。
-4. 等待签名安装完成，然后打开“cqie课表”，进入学校官方登录页登录。
+- 免费 Apple ID 签名有效期为 7 天，到期前需要重新用 Sideloadly 安装一次。
+- 付费 Apple Developer 账号的签名通常可使用一年。
+- 你可以把本安装包 ZIP 发给对方，但签名安装时最好由对方本人输入自己的 Apple ID。
 
-## 每 7 天刷新
+## 可选：使用 AltStore 自动刷新
 
-让 iPhone 与安装 AltServer 的电脑处于同一 Wi-Fi，电脑保持 AltServer 运行；在 AltStore 的 **My Apps** 页面点击 **Refresh All**。
+如果不想每周重新拖入 IPA，也可以安装 AltServer/AltStore。让 iPhone 与安装 AltServer 的电脑处于同一 Wi-Fi，电脑保持 AltServer 运行，然后在 AltStore 的 **My Apps** 页面点击 `+` 安装 IPA，之后使用 **Refresh All** 刷新签名。
 
 不要把 Apple ID 密码、验证码或学校账号提供给他人。账号密码只应由使用者本人在 Apple/学校官方页面中输入。

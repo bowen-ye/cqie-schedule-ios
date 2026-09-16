@@ -43,29 +43,49 @@ const S = {
   models: new Map(),   // sessionId -> model
   manual: new Map(),   // sessionId -> 手动添加项[]
   colorIdx: new Map(), nextColor: 0,
+  mobileDay: Math.max(1, Math.min(7, new Date().getDay() || 7)),
   _editing: null,      // 正在编辑的手动项 id
   _tick: null,
 };
 
 const $ = (id) => document.getElementById(id);
+const STATUS_ICON = {
+  loading: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v6h-6"/></svg>',
+  info: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></svg>',
+  done: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>',
+  free: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14v10H5zM8 5v3M16 5v3M8 13h8"/></svg>',
+  key: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="12" r="4"/><path d="m12 12 8-8M16 8l2 2"/></svg>',
+  warning: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.5 20h19zM12 9v5M12 17h.01"/></svg>',
+};
+function blankState(kind, text) {
+  return `<div class="blank"><div class="big">${STATUS_ICON[kind] || STATUS_ICON.info}</div>${text}</div>`;
+}
 
-/* ---------------- 直连模式 (Android / iOS 壳) ----------------
- * window.Android 是两端共用的原生桥名称: 浏览器里不存在 -> 仍走后端 server.py;
- * App 里存在 -> 直接拿 Bearer token 打教务接口, 响应形状与 server.py 完全一致。
- * Android 桥返回同步值, iOS WKWebView 桥返回 Promise; 网络层同时兼容两种形式。
+/* ---------------- 直连模式 (Android / iOS / Safari PWA) ----------------
+ * 原生壳通过 window.Android 提供桥; HTTPS 网页通过学校 OAuth 直接拿 Bearer token。
+ * 两种模式都只连接学校官方接口, 不经过自建中转服务器。
  */
-const NATIVE_PLATFORM = (() => {
+const APP_PLATFORM = (() => {
   try {
     if (typeof window === "undefined" || !window.Android || !window.Android.platform) return "";
     return window.Android.platform();
   } catch (e) { return ""; }
 })();
-const NATIVE = NATIVE_PLATFORM === "android" || NATIVE_PLATFORM === "ios";
+const WEB_DIRECT = !APP_PLATFORM && (location.protocol === "https:" || new URLSearchParams(location.search).has("direct"));
+const NATIVE_PLATFORM = APP_PLATFORM || (WEB_DIRECT ? "web" : "");
+const NATIVE = !!NATIVE_PLATFORM;
 
 const NJW = {
   timetable: "https://njw.cqie.edu.cn/api/timetable",
   enroll: "https://njw.cqie.edu.cn/api/enrollment",
   resource: "https://njw.cqie.edu.cn/api/resourceapi",
+};
+const WEB_OAUTH = {
+  auth: "https://njw.cqie.edu.cn/authserver",
+  clientId: "personal-prod",
+  clientSecret: "app-a-1234",
+  tokenKey: "kbt-web-oauth-v1",
+  stateKey: "kbt-web-oauth-state",
 };
 /* 与 server.py 裁剪一致: 只回传渲染所需字段(原始行 150+ 键, 裁掉省内存) */
 const KEEP = ["courseName", "courseCode", "classNbr", "credit", "campusName", "roomName",
@@ -73,7 +93,132 @@ const KEEP = ["courseName", "courseCode", "classNbr", "credit", "campusName", "r
   "teachingWeekFormat", "teachingWeek", "period"];
 
 let _tok = null;
-function _A() { return NATIVE ? window.Android : null; }
+
+function webTokenRecord() {
+  try { return JSON.parse(localStorage.getItem(WEB_OAUTH.tokenKey) || "null"); }
+  catch (e) { return null; }
+}
+function saveWebToken(j) {
+  const old = webTokenRecord() || {};
+  const record = {
+    accessToken: j.access_token || "",
+    refreshToken: j.refresh_token || old.refreshToken || "",
+    expiresAt: Date.now() + Math.max(60, (+j.expires_in || 604799) - 120) * 1000,
+  };
+  localStorage.setItem(WEB_OAUTH.tokenKey, JSON.stringify(record));
+  _tok = record.accessToken || null;
+  return record.accessToken;
+}
+function webRedirectUri() {
+  return location.origin + location.pathname;
+}
+async function webTokenRequest(fields) {
+  const body = new URLSearchParams(fields);
+  const basic = btoa(WEB_OAUTH.clientId + ":" + WEB_OAUTH.clientSecret);
+  const response = await fetch(WEB_OAUTH.auth + "/oauth/token", {
+    method: "POST",
+    headers: {
+      Authorization: "Basic " + basic,
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.access_token) throw new Error(data.error_description || "登录凭证获取失败");
+  return saveWebToken(data);
+}
+async function refreshWebToken() {
+  const record = webTokenRecord();
+  if (!record || !record.refreshToken) return "";
+  try {
+    return await webTokenRequest({
+      grant_type: "refresh_token",
+      refresh_token: record.refreshToken,
+      client_id: WEB_OAUTH.clientId,
+      client_secret: WEB_OAUTH.clientSecret,
+    });
+  } catch (e) { return ""; }
+}
+function randomState() {
+  const bytes = new Uint8Array(18);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (n) => n.toString(16).padStart(2, "0")).join("");
+}
+function startWebLogin(force) {
+  const state = randomState();
+  sessionStorage.setItem(WEB_OAUTH.stateKey, state);
+  const query = new URLSearchParams({
+    client_id: WEB_OAUTH.clientId,
+    response_type: "code",
+    scope: "all",
+    state,
+    redirect_uri: webRedirectUri(),
+  });
+  if (force) query.set("prompt", "login");
+  location.assign(WEB_OAUTH.auth + "/oauth/authorize?" + query.toString());
+}
+async function handleWebOAuthCallback() {
+  if (!WEB_DIRECT) return;
+  const query = new URLSearchParams(location.search);
+  const code = query.get("code");
+  const error = query.get("error");
+  if (!code && !error) return;
+  const gate = $("authGate");
+  const message = $("authMessage");
+  if (gate) gate.hidden = false;
+  if (message) message.textContent = error ? "学校登录未完成" : "正在读取你的课表…";
+  try {
+    if (error) throw new Error(query.get("error_description") || error);
+    const expected = sessionStorage.getItem(WEB_OAUTH.stateKey);
+    if (!expected || expected !== query.get("state")) throw new Error("登录状态校验失败，请重新登录");
+    await webTokenRequest({
+      client_id: WEB_OAUTH.clientId,
+      client_secret: WEB_OAUTH.clientSecret,
+      code,
+      redirect_uri: webRedirectUri(),
+      grant_type: "authorization_code",
+    });
+    sessionStorage.removeItem(WEB_OAUTH.stateKey);
+    history.replaceState({}, document.title, location.pathname);
+    if (gate) gate.hidden = true;
+  } catch (e) {
+    localStorage.removeItem(WEB_OAUTH.tokenKey);
+    if (message) message.textContent = (e && e.message) || "登录失败，请重试";
+  }
+}
+const WEB_BRIDGE = {
+  platform: () => "web",
+  token: () => (webTokenRecord() || {}).accessToken || "",
+  ensureToken: async () => {
+    const record = webTokenRecord();
+    if (record && record.accessToken && record.expiresAt > Date.now() + 60000) return record.accessToken;
+    const refreshed = await refreshWebToken();
+    if (refreshed) return refreshed;
+    startWebLogin(false);
+    return "";
+  },
+  relogin: async () => { startWebLogin(true); return ""; },
+  logout: async () => {
+    localStorage.removeItem(WEB_OAUTH.tokenKey);
+    _tok = null;
+    return true;
+  },
+  http: async (method, url, bearer, body) => {
+    try {
+      const headers = { Accept: "application/json" };
+      if (bearer) headers.Authorization = "Bearer " + bearer;
+      if (body) headers["Content-Type"] = "application/json";
+      const response = await fetch(url, { method, headers, body: body || undefined });
+      const text = await response.text();
+      return response.ok ? text : `__KBT_ERR__${response.status}\n${text.slice(0, 500)}`;
+    } catch (e) { return "__KBT_ERR__0\n" + ((e && e.message) || "网络错误"); }
+  },
+};
+function _A() {
+  if (APP_PLATFORM) return window.Android;
+  return WEB_DIRECT ? WEB_BRIDGE : null;
+}
 function _bearer() {
   if (!_tok) { const a = _A(); if (a && a.token) _tok = a.token() || null; }
   return _tok;
@@ -470,10 +615,13 @@ function displayPeriods(m) {
 }
 function renderSheet() {
   const sheet = $("sheet");
+  const mobile = $("mobileSchedule");
   const m = S.models.get(S.sessionId);
   sheet.innerHTML = "";
+  if (mobile) mobile.innerHTML = "";
   if (!m) {
-    sheet.innerHTML = `<div class="blank"><div class="big">⏳</div>加载课表中…</div>`;
+    sheet.innerHTML = blankState("loading", "加载课表中…");
+    if (mobile) mobile.innerHTML = `<div class="mobile-empty">正在读取课表…</div>`;
     return;
   }
   const showingToday = isShowingToday();
@@ -550,32 +698,63 @@ function renderSheet() {
     trows.appendChild(col);
   }
   sheet.append(thead, trows);
+  renderMobileSchedule(m, evs, manList, cp, tWd);
 }
 function layout(evs, N, HH) {
   const sorted = [...evs].sort((a, b) => a.per.min - b.per.min || b.per.max - a.per.max);
-  const laneEnd = [];
-  const placed = sorted.map((e) => {
-    let li = laneEnd.findIndex((end) => end < e.per.min);
-    if (li < 0) { li = laneEnd.length; laneEnd.push(-1e9); }
-    laneEnd[li] = e.per.max;
-    return li;
-  });
-  const lanes = Math.max(1, laneEnd.length);
-  return sorted.map((e, i) => ({
-    e,
-    top: (e.per.min - 1) * HH,
-    height: (e.per.max - e.per.min + 1) * HH - 2,
-    left: lanes > 1 ? (placed[i] * 100) / lanes : 0,
-    width: lanes > 1 ? 100 / lanes : 100,
-    n: lanes,
-  }));
+  const clusters = [];
+  let cluster = [];
+  let clusterEnd = -1;
+  for (const e of sorted) {
+    if (cluster.length && e.per.min > clusterEnd) {
+      clusters.push(cluster);
+      cluster = [];
+      clusterEnd = -1;
+    }
+    cluster.push(e);
+    clusterEnd = Math.max(clusterEnd, e.per.max);
+  }
+  if (cluster.length) clusters.push(cluster);
+
+  const out = [];
+  for (const items of clusters) {
+    const laneEnd = [];
+    const assigned = items.map((e) => {
+      let lane = laneEnd.findIndex((end) => end < e.per.min);
+      if (lane < 0) { lane = laneEnd.length; laneEnd.push(-1); }
+      laneEnd[lane] = e.per.max;
+      return lane;
+    });
+    const lanes = Math.max(1, laneEnd.length);
+    if (lanes >= 3) {
+      const min = Math.min(...items.map((e) => e.per.min));
+      const max = Math.max(...items.map((e) => e.per.max));
+      out.push({
+        e: items[0], group: items, top: (min - 1) * HH,
+        height: (max - min + 1) * HH - 2, left: 0, width: 100,
+        n: lanes, conflict: true,
+      });
+      continue;
+    }
+    items.forEach((e, i) => out.push({
+      e,
+      top: (e.per.min - 1) * HH,
+      height: (e.per.max - e.per.min + 1) * HH - 2,
+      left: lanes > 1 ? (assigned[i] * 100) / lanes : 0,
+      width: lanes > 1 ? 100 / lanes : 100,
+      n: lanes,
+      conflict: lanes > 1,
+    }));
+  }
+  return out;
 }
 function makeEv(pl, inToday) {
   const { e, top, height, left, width } = pl;
   const man = e.manual;
   const col = man ? PALETTE[manualColorIdx(man)] : colorOf(e.key);
-  const div = document.createElement("div");
-  div.className = "ev" + (man ? " manual" : "");
+  const div = document.createElement("button");
+  div.type = "button";
+  div.className = "ev" + (man ? " manual" : "") + (pl.conflict ? " conflict" : "");
   div.style.top = top + "px";
   div.style.height = height + "px";
   div.style.left = left + "%";
@@ -584,6 +763,16 @@ function makeEv(pl, inToday) {
   div.style.borderColor = col;
   div.style.color = "#1b2330";
   if (inToday) div.style.boxShadow = `0 0 0 1.5px var(--accent), 0 3px 8px rgba(20,30,60,.18)`;
+
+  if (pl.group) {
+    div.classList.add("conflict-group");
+    div.setAttribute("aria-label", `${pl.group.length} 门课程时间冲突，查看全部`);
+    div.innerHTML = `<span class="conflict-count">${pl.group.length} 门课时间冲突</span>` +
+      `<span class="nm">${pl.group.map((item) => esc(item.name)).join(" · ")}</span>` +
+      `<span class="te">点击查看全部安排</span>`;
+    div.onclick = (ev) => { ev.stopPropagation(); openConflictGroup(pl.group); };
+    return div;
+  }
 
   const clock = clockRange(e.per.min, e.per.max);
   let inner;
@@ -595,7 +784,7 @@ function makeEv(pl, inToday) {
       `<span class="nm">${esc(e.name)}</span>` +
       `<span class="mk">${KIND_LABEL[man.kind] || "事项"} · ${manualWeeksLabel(man)}</span>` +
       (meta.length ? `<span class="te">${esc(meta.join(" · "))}</span>` : "");
-    div.title = `${KIND_LABEL[man.kind] || "手动"}：${e.name}\n${WD[e.weekDay - 1]} ${periodLabel(e.per.min, e.per.max)}节 ${clock ? "(" + clock + ")" : ""} ${manualWeeksLabel(man)}${man.loc ? "\n" + man.loc : ""}${man.note ? "\n" + man.note : ""}\n点击编辑 / 删除`;
+    div.title = `${KIND_LABEL[man.kind] || "手动"}：${e.name}\n${WD[e.weekDay - 1]} ${periodLabel(e.per.min, e.per.max)} ${clock ? "(" + clock + ")" : ""} ${manualWeeksLabel(man)}${man.loc ? "\n" + man.loc : ""}${man.note ? "\n" + man.note : ""}\n点击编辑 / 删除`;
     div.onclick = (ev) => { ev.stopPropagation(); openManualModal({ editId: man.id }); };
   } else {
     const roomBit = [e.campus, e.room].filter(Boolean).join(" · ");
@@ -606,11 +795,91 @@ function makeEv(pl, inToday) {
       `<span class="nm">${esc(e.name)}</span>` +
       (meta.length ? `<span class="rm">${esc(meta.join(" · "))}</span>` : "") +
       `<span class="te">${esc(periodLabel(e.per.min, e.per.max))}${clock ? " " + esc(clock) : ""} · 第${esc(e.weeksTxt || "—")}周</span>`;
-    div.title = `${e.name}\n${e.classNbr}\n第${e.weeksTxt}周 ${WD[e.weekDay - 1]} ${periodLabel(e.per.min, e.per.max)}节\n${roomBit || "无教室"}\n老师: ${e.instr || "-"}`;
+    div.title = `${e.name}\n${e.classNbr}\n第${e.weeksTxt}周 ${WD[e.weekDay - 1]} ${periodLabel(e.per.min, e.per.max)}\n${roomBit || "无教室"}\n老师: ${e.instr || "-"}`;
     div.onclick = (ev) => { ev.stopPropagation(); openDetail(e.key); };
   }
   div.innerHTML = inner;
   return div;
+}
+
+function eventsOverlap(a, b) {
+  return a !== b && a.per.min <= b.per.max && b.per.min <= a.per.max;
+}
+function renderMobileSchedule(m, fixedEvents, manualItems, current, todayColumn) {
+  const root = $("mobileSchedule");
+  if (!root) return;
+  const allByDay = new Map();
+  for (let day = 1; day <= 7; day++) allByDay.set(day, []);
+  fixedEvents.forEach((e) => allByDay.get(e.weekDay).push(e));
+  manualItems.forEach((item) => {
+    if (manualShows(item, S.week, m.termWeeks)) allByDay.get(item.day).push(toManualEv(item));
+  });
+  for (const events of allByDay.values()) events.sort((a, b) => a.per.min - b.per.min || a.per.max - b.per.max);
+
+  if (!S.mobileDay || S.mobileDay < 1 || S.mobileDay > 7) S.mobileDay = todayColumn > 0 ? todayColumn : 1;
+  const activeDay = S.mobileDay;
+  const activeEvents = allByDay.get(activeDay);
+  const date = dayDateStr(S.week, activeDay);
+  const isToday = activeDay === todayColumn;
+
+  const days = Array.from({ length: 7 }, (_, index) => {
+    const day = index + 1;
+    const count = allByDay.get(day).length;
+    return `<button type="button" role="tab" class="mobile-day${day === activeDay ? " selected" : ""}${day === todayColumn ? " today" : ""}" data-mobile-day="${day}" aria-selected="${day === activeDay}" aria-controls="mobileDayPanel" tabindex="${day === activeDay ? 0 : -1}" aria-label="${WD[index]}${count ? `，${count}项` : "，无课"}">` +
+      `<span>${WD[index].slice(1)}</span><b>${dayDateStr(S.week, day) || day}</b><i>${count || ""}</i></button>`;
+  }).join("");
+
+  const rows = activeEvents.map((e) => {
+    const manual = e.manual;
+    const color = manual ? PALETTE[manualColorIdx(manual)] : colorOf(e.key);
+    const conflict = activeEvents.some((other) => eventsOverlap(e, other));
+    const going = isToday && current != null && e.per.min <= current && e.per.max >= current;
+    const room = manual ? (manual.loc || "") : [e.campus, e.room].filter(Boolean).join(" · ");
+    const teacher = manual ? (manual.note || "") : e.instr;
+    const meta = [room, teacher].filter(Boolean).join(" · ") || "地点待定";
+    const time = clockRange(e.per.min, e.per.max);
+    return `<button type="button" class="mobile-course${going ? " going" : ""}" data-course-key="${esc(e.key)}" data-manual-id="${manual ? esc(manual.id) : ""}" style="--course:${color};--course-soft:${tint(color, .12)}">` +
+      `<span class="mobile-course-time"><b>${esc(periodLabel(e.per.min, e.per.max))}</b><small>${esc(time)}</small></span>` +
+      `<span class="mobile-course-body"><strong>${esc(e.name)}</strong><span>${esc(meta)}</span>` +
+      `<span class="mobile-course-tags">${going ? "<em>正在上课</em>" : ""}${conflict ? "<em class=\"conflict-tag\">时间冲突</em>" : ""}${manual ? `<em>${esc(KIND_LABEL[manual.kind] || "手动")}</em>` : ""}</span></span>` +
+      `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>`;
+  }).join("");
+
+  root.innerHTML = `<div class="mobile-days" role="tablist" aria-label="选择星期">${days}</div>` +
+    `<div class="mobile-day-summary"><div><strong>${isToday ? "今天 · " : ""}${WD[activeDay - 1]}</strong><span>${date ? date + " · " : ""}第 ${S.week} 周</span></div>` +
+    `<b>${activeEvents.length ? activeEvents.length + " 项" : "无课"}</b></div>` +
+    `<div class="mobile-course-list" id="mobileDayPanel" role="tabpanel">${rows || `<button type="button" class="mobile-empty-add" id="mobileEmptyAdd"><span>这一天没有课程</span><b>添加一项</b></button>`}</div>`;
+
+  root.querySelectorAll("[data-mobile-day]").forEach((button) => {
+    button.onclick = () => { S.mobileDay = +button.dataset.mobileDay; renderSheet(); };
+    button.onkeydown = (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      S.mobileDay = Math.max(1, Math.min(7, S.mobileDay + (event.key === "ArrowRight" ? 1 : -1)));
+      renderSheet();
+      root.querySelector(`[data-mobile-day="${S.mobileDay}"]`)?.focus();
+    };
+  });
+  root.querySelectorAll(".mobile-course").forEach((button) => {
+    button.onclick = () => {
+      if (button.dataset.manualId) openManualModal({ editId: button.dataset.manualId });
+      else openDetail(button.dataset.courseKey);
+    };
+  });
+  const emptyAdd = $("mobileEmptyAdd");
+  if (emptyAdd) emptyAdd.onclick = () => openManualModal({ day: activeDay, p: 1 });
+
+  if (!root._swipeBound) {
+    let touchStart = 0;
+    root.addEventListener("touchstart", (event) => { touchStart = event.changedTouches[0].clientX; }, { passive: true });
+    root.addEventListener("touchend", (event) => {
+      const delta = event.changedTouches[0].clientX - touchStart;
+      if (Math.abs(delta) < 55) return;
+      S.mobileDay = Math.max(1, Math.min(7, S.mobileDay + (delta < 0 ? 1 : -1)));
+      renderSheet();
+    }, { passive: true });
+    root._swipeBound = true;
+  }
 }
 function renderOnline() {
   const m = S.models.get(S.sessionId);
@@ -620,7 +889,8 @@ function renderOnline() {
   panel.hidden = false;
   for (const e of m.online) {
     const col = colorOf(e.key);
-    const c = document.createElement("div");
+    const c = document.createElement("button");
+    c.type = "button";
     c.className = "chip";
     c.innerHTML = `<span class="cd" style="background:${col}"></span>` +
       `<span><b>${esc(e.name)}</b></span>` +
@@ -641,7 +911,7 @@ function renderToday() {
   if (!curOn) {
     $("thMeta").textContent = "尚未确认当前教学周(教务接口暂不可用), 无法判断今天该上什么课。";
     $("nextCard").innerHTML = "";
-    $("dayRows").innerHTML = `<div class="blank"><div class="big">🤔</div>当前周未知, 晚点再试或点右上角「刷新」</div>`;
+    $("dayRows").innerHTML = blankState("info", "当前周未知，晚点再试或点右上角“刷新”");
     $("daySrc").textContent = "";
     return;
   }
@@ -652,7 +922,7 @@ function renderToday() {
   if (!m) {
     $("thMeta").textContent = "正在拉取当前学期课表…";
     $("nextCard").innerHTML = "";
-    $("dayRows").innerHTML = `<div class="blank"><div class="big">⏳</div>加载中…</div>`;
+    $("dayRows").innerHTML = blankState("loading", "加载中…");
     return;
   }
   $("thMeta").textContent = `教务当前周第 ${S.curWeek} 周 · 周课表现停留在第 ${S.week} 周` +
@@ -684,21 +954,25 @@ function renderToday() {
   } else if (next) {
     card = nextCard(next.e, "下一节课", `${minHm(next.s)} 开始 · ${next.e.room || "无教室"}`, col(next.e), false);
   } else if (evs.length) {
-    card = `<div class="nextcard end">✅ 今天的课都已结束</div>`;
+    card = `<div class="nextcard end"><span class="state-icon">${STATUS_ICON.done}</span>今天的课都已结束</div>`;
   } else {
-    card = `<div class="nextcard none">🎉 今天没课, 可以安排自己的事</div>`;
+    card = `<div class="nextcard none"><span class="state-icon">${STATUS_ICON.free}</span>今天没课，可以安排自己的事</div>`;
   }
   $("nextCard").innerHTML = card;
+  $("nextCard").querySelector("[data-next-course]")?.addEventListener("click", (event) => {
+    openDetail(event.currentTarget.dataset.nextCourse);
+  });
 
   // ---- 今日课程列表 ----
   const wrap = $("dayRows");
   wrap.innerHTML = "";
   if (!rows.length) {
-    wrap.innerHTML = `<div class="blank"><div class="big">🛋</div>今天（第 ${S.curWeek} 周）没有固定排课</div>`;
+    wrap.innerHTML = blankState("free", `今天（第 ${S.curWeek} 周）没有固定排课`);
   } else {
     rows.forEach((r) => {
       const { e, s, en, st } = r;
-      const div = document.createElement("div");
+      const div = document.createElement("button");
+      div.type = "button";
       div.className = "dayrow" + (st === "going" ? " going" : st === "done" ? " done" : "");
       const badge = { going: "进行中", todo: "未到", done: "已过" }[st];
       div.innerHTML =
@@ -720,11 +994,45 @@ function renderToday() {
   wrap.appendChild(tick);
 }
 function nextCard(e, tag, sub, col, going) {
-  return `<div class="nextcard ${going ? "going" : ""}" onclick="openDetail('${esc(e.key).replace(/'/g, "\\'")}')">` +
+  return `<button type="button" class="nextcard ${going ? "going" : ""}" data-next-course="${esc(e.key)}">` +
     `<div class="nc-tag">${tag}</div>` +
     `<div class="nc-body"><div class="nc-name"><span class="dotc" style="background:${col}"></span>${esc(e.name)}</div>` +
     `<div class="nc-sub">${esc(sub)} · ${esc([e.campus, e.room].filter(Boolean).join(" ") || "无教室")} · 第${esc(e.weeksTxt)}周</div></div>` +
-    `<div class="nc-more">详情 ›</div></div>`;
+    `<div class="nc-more">详情 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></div></button>`;
+}
+
+let activeDialog = null;
+let dialogReturnFocus = null;
+function setPageInert(inert) {
+  document.querySelectorAll("body > header, body > nav, body > main").forEach((node) => {
+    node.inert = inert;
+    if (inert) node.setAttribute("aria-hidden", "true");
+    else node.removeAttribute("aria-hidden");
+  });
+}
+function showDialog(container, preferredFocus) {
+  dialogReturnFocus = document.activeElement;
+  container.hidden = false;
+  activeDialog = container;
+  setPageInert(true);
+  requestAnimationFrame(() => (preferredFocus || container.querySelector("[role=dialog]") || container).focus());
+}
+function closeDialog(container) {
+  if (!container) return;
+  container.hidden = true;
+  if (container.id === "installSheet") {
+    $("installBackdrop").hidden = true;
+    localStorage.setItem("kbt-install-dismissed", "1");
+  }
+  if (container.id === "addMask") S._editing = null;
+  if (activeDialog === container) activeDialog = null;
+  setPageInert(false);
+  if (dialogReturnFocus && document.contains(dialogReturnFocus)) dialogReturnFocus.focus();
+  dialogReturnFocus = null;
+}
+function dialogFocusable(container) {
+  return [...container.querySelectorAll('button:not([disabled]):not([hidden]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')]
+    .filter((node) => !node.closest("[hidden]"));
 }
 
 /* ---------------- 课程详情 ---------------- */
@@ -749,7 +1057,7 @@ function openDetail(key) {
     .forEach((e) => {
       const clk = clockRange(e.per.min, e.per.max);
       const room = [e.campus, e.room].filter(Boolean).join(" · ");
-      slots += `<li><b>${WD[e.weekDay - 1]} ${periodLabel(e.per.min, e.per.max)}节</b>` +
+      slots += `<li><b>${WD[e.weekDay - 1]} ${periodLabel(e.per.min, e.per.max)}</b>` +
         (clk ? ` <span class="sd">${clk}</span>` : "") +
         `　第 ${esc(e.weeksTxt)} 周　${esc(room || "无教室")}</li>`;
     });
@@ -767,7 +1075,22 @@ function openDetail(key) {
     `<div class="ks">${ks.join("")}</div>` +
     `<div class="h3">上课安排</div>` +
     (slots ? `<ul class="slots">${slots}</ul>` : `<div class="dim">该课程暂无固定排课</div>`);
-  $("detailMask").hidden = false;
+  showDialog($("detailMask"));
+}
+
+function openConflictGroup(items) {
+  const list = items.map((item) => {
+    const room = [item.campus, item.room].filter(Boolean).join(" · ") || "无教室";
+    return `<button type="button" class="conflict-choice" data-conflict-key="${esc(item.key)}">` +
+      `<span><b>${esc(item.name)}</b><small>${esc(periodLabel(item.per.min, item.per.max))} · ${esc(room)}</small></span>` +
+      `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>`;
+  }).join("");
+  $("detailBody").innerHTML = `<div class="dhead"><span class="dname">时间冲突</span><span class="dtag">${items.length} 门课</span></div>` +
+    `<p class="dim">这些课程占用了相同节次，已全部保留。选择一门查看完整信息。</p><div class="conflict-list">${list}</div>`;
+  $("detailBody").querySelectorAll("[data-conflict-key]").forEach((button) => {
+    button.onclick = () => openDetail(button.dataset.conflictKey);
+  });
+  showDialog($("detailMask"));
 }
 
 /* ---------------- 手动添加 / 编辑 弹窗 ---------------- */
@@ -812,10 +1135,9 @@ function openManualModal({ day, p, editId } = {}) {
   $("mfNote").value = x ? x.note : "";
   $("mfMaxW").textContent = S.maxTerm;
   $("mfDel").hidden = !x;
-  $("addMask").hidden = false;
-  $("mfTitle").focus();
+  showDialog($("addMask"), $("mfTitle"));
 }
-function closeManualModal() { $("addMask").hidden = true; S._editing = null; }
+function closeManualModal() { closeDialog($("addMask")); }
 function readManualForm() {
   const st = +$("mfStart").value, en = Math.max(+$("mfEnd").value, st);
   return {
@@ -848,7 +1170,7 @@ function saveManualModal() {
   }
   saveManual(S.sessionId);
   S._editing = null;
-  $("addMask").hidden = true;
+  closeDialog($("addMask"));
   renderAll();
   if (S.tab === "today") setTab("week");   // 编辑发生在周课表上
 }
@@ -860,7 +1182,7 @@ function deleteManualModal() {
   const i = arr.findIndex((y) => y.id === id);
   if (i >= 0) { arr.splice(i, 1); saveManual(S.sessionId); }
   S._editing = null;
-  $("addMask").hidden = true;
+  closeDialog($("addMask"));
   toast(`已删除「${x ? x.title : ""}」`);
   renderAll();
 }
@@ -881,7 +1203,7 @@ async function loadTerm(sessionId, { force } = {}) {
       applyWeekDefault(sessionId);
       renderAll();
     } else {
-      $("sheet").innerHTML = `<div class="blank"><div class="big">⏳</div>正在拉取该学期课表…</div>`;
+      $("sheet").innerHTML = blankState("loading", "正在拉取该学期课表…");
     }
   }
 
@@ -938,8 +1260,12 @@ function setWeek(w) {
 function showLoginNeed(d) {
   $("acct").textContent = "未登录";
   if (NATIVE) {
-    $("sheet").innerHTML =
-      `<div class="blank"><div class="big">🔑</div>尚未登录教务账号` +
+    if (WEB_DIRECT) {
+      $("authGate").hidden = false;
+      $("authMessage").textContent = "登录后自动整理你的个人课表";
+      return;
+    }
+    $("sheet").innerHTML = `<div class="blank"><div class="big">${STATUS_ICON.key}</div>尚未登录教务账号` +
       `<div class="errband">本机登录信息已清空(退出完成)。点下方按钮，用官方登录页登录/换账号。</div>` +
       `<div class="fbtns" style="justify-content:center;margin-top:14px">` +
       `<button class="primary" id="goLoginBtn">去官方登录页</button></div></div>`;
@@ -955,14 +1281,14 @@ function showLoginNeed(d) {
     };
     return;
   }
-  $("sheet").innerHTML =
-    `<div class="blank"><div class="big">🔑</div>需要先登录教务 (${esc(d.account || "")})` +
+  $("sheet").innerHTML = `<div class="blank"><div class="big">${STATUS_ICON.key}</div>需要先登录教务 (${esc(d.account || "")})` +
     `<div class="errband">后端本地 token 已失效。请在 抢课脚本 目录重刷 token 后再刷新本页：<br>` +
     `cd E:\\software\\抢课脚本 &amp;&amp; python login_537_wait.py</div></div>`;
 }
 function showError(msg) {
-  $("sheet").innerHTML = `<div class="blank"><div class="big">⚠️</div>${esc(msg)}</div>`;
-  if (S.tab === "today") $("dayRows").innerHTML = `<div class="blank"><div class="big">⚠️</div>${esc(msg)}</div>`;
+  $("sheet").innerHTML = blankState("warning", esc(msg));
+  if ($("mobileSchedule")) $("mobileSchedule").innerHTML = `<div class="mobile-empty">${esc(msg)}</div>`;
+  if (S.tab === "today") $("dayRows").innerHTML = blankState("warning", esc(msg));
 }
 
 /* ---------------- Tab 切换 ---------------- */
@@ -971,6 +1297,10 @@ function setTab(t) {
   const on = t === "week";
   $("tabWeek").classList.toggle("on", on);
   $("tabToday").classList.toggle("on", !on);
+  $("tabWeek").setAttribute("aria-selected", String(on));
+  $("tabToday").setAttribute("aria-selected", String(!on));
+  $("tabWeek").tabIndex = on ? 0 : -1;
+  $("tabToday").tabIndex = on ? -1 : 0;
   $("paneWeek").hidden = !on;
   $("paneToday").hidden = on;
   renderAll();
@@ -1019,7 +1349,7 @@ function openAccount() {
   $("acctTip").textContent = NATIVE
     ? "账号密码在教务官方登录页输入，本机只存约 7 天有效的 token，过期自动静默续期。"
     : "本地缓存=最近学期的课表，供断网时秒开；清除后下次打开会自动从教务重新拉取。";
-  $("acctMask").hidden = false;
+  showDialog($("acctMask"));
 }
 function clearCacheAccount() {
   wipeLocal();
@@ -1049,6 +1379,7 @@ function logoutAccount() {
 
 /* ---------------- 启动 ---------------- */
 async function init() {
+  await handleWebOAuthCallback();
   if (NATIVE) {                       // App 壳里的小调整
     const b = document.querySelector(".badge");
     if (b) b.textContent = "直连教务";
@@ -1081,7 +1412,7 @@ async function init() {
       if (cached && cached.length) S.models.set(act0.sessionId, buildModel(cached));
     }
     if (S.models.has(act0.sessionId)) { applyWeekDefault(act0.sessionId); renderAll(); }
-    else { $("sheet").innerHTML = `<div class="blank"><div class="big">⏳</div>首次打开，正在从教务拉取…</div>`; }
+    else { $("sheet").innerHTML = blankState("loading", "首次打开，正在从教务拉取…"); }
   }
 
   // 在线: 拉状态 + 学期 + 当前周 + 作息, 覆盖上面的缓存
@@ -1124,6 +1455,10 @@ async function init() {
   }
   cacheSaveMeta();
   startTick();
+  setupInstallPrompt();
+  if ("serviceWorker" in navigator && location.protocol === "https:") {
+    navigator.serviceWorker.register("./service-worker.js").catch(() => {});
+  }
 }
 /* 实测顶栏/Tab条高度, 供 sticky 定位精确对齐 */
 function measureHeights() {
@@ -1156,8 +1491,15 @@ function bindUI() {
   window.addEventListener("resize", measureHeights);
   $("tabWeek").onclick = () => setTab("week");
   $("tabToday").onclick = () => setTab("today");
+  document.querySelector(".tabbar").addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const next = S.tab === "week" ? "today" : "week";
+    setTab(next);
+    $(next === "week" ? "tabWeek" : "tabToday").focus();
+  });
   $("addBtn").onclick = () => openManualModal({ day: todayWd(), p: 1 });
-  $("addMask").addEventListener("click", (e) => { if (e.target.id === "addMask") e.target.hidden = true; });
+  $("addMask").addEventListener("click", (e) => { if (e.target.id === "addMask") closeDialog(e.target); });
   $("mfStart").onchange = (e) => { const s = +e.target.value; if (+$("mfEnd").value < s) $("mfEnd").value = s; };
   $("mfCancel").onclick = closeManualModal;
   $("mfSave").onclick = saveManualModal;
@@ -1171,15 +1513,44 @@ function bindUI() {
     const sid = S.tab === "today" ? S.activeId : S.sessionId;
     if (sid) loadTerm(sid, { force: true });
   };
-  document.querySelectorAll("[data-close]").forEach((b) => (b.onclick = () => b.closest(".mask").hidden = true));
-  $("detailMask").addEventListener("click", (e) => { if (e.target.id === "detailMask") e.target.hidden = true; });
-  $("acctMask").addEventListener("click", (e) => { if (e.target.id === "acctMask") e.target.hidden = true; });
+  document.querySelectorAll("[data-close]").forEach((b) => (b.onclick = () => closeDialog(b.closest(".mask"))));
+  $("detailMask").addEventListener("click", (e) => { if (e.target.id === "detailMask") closeDialog(e.target); });
+  $("acctMask").addEventListener("click", (e) => { if (e.target.id === "acctMask") closeDialog(e.target); });
   $("acctBtn").onclick = openAccount;
   $("acct").onclick = openAccount;
   $("acctClear").onclick = clearCacheAccount;
   $("acctLogout").onclick = logoutAccount;
-  // nextCard 用内联 onclick 触发详情
-  window.openDetail = openDetail;
+  $("authLoginBtn").onclick = () => startWebLogin(false);
+  document.addEventListener("keydown", (event) => {
+    if (!activeDialog) return;
+    if (event.key === "Escape") { event.preventDefault(); closeDialog(activeDialog); return; }
+    if (event.key !== "Tab") return;
+    const focusable = dialogFocusable(activeDialog);
+    if (!focusable.length) { event.preventDefault(); return; }
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  });
+}
+
+function isStandalone() {
+  return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+}
+function setupInstallPrompt() {
+  if (!WEB_DIRECT || isStandalone() || localStorage.getItem("kbt-install-dismissed")) return;
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isSafari = /safari/i.test(navigator.userAgent) && !/crios|fxios|edgios/i.test(navigator.userAgent);
+  if (!isIOS || !isSafari || !_bearer()) return;
+  const sheet = $("installSheet"), backdrop = $("installBackdrop");
+  const close = () => {
+    closeDialog(sheet);
+    backdrop.hidden = true;
+    localStorage.setItem("kbt-install-dismissed", "1");
+  };
+  setTimeout(() => { backdrop.hidden = false; showDialog(sheet); }, 650);
+  $("installClose").onclick = close;
+  $("installDone").onclick = close;
+  backdrop.onclick = close;
 }
 
 init();

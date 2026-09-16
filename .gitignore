@@ -23,6 +23,7 @@ prototype/preview/
 prototype/server.py
 prototype/mob_check.py
 prototype/layout_check.py
+.impeccable/
 
 # 本机安装/测试说明(含本人学号, 仅本地使用, 不入库)
 docs/APK安装与测试.md

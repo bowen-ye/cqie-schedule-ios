@@ -1,0 +1,47 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Sync web assets
+        run: sh ios/sync_web.sh
+
+      - name: Build app without code signing
+        run: |
+          xcodebuild \
+            -project ios/Kebiao.xcodeproj \
+            -scheme Kebiao \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            clean build
+
+      - name: Package IPA
+        run: |
+          mkdir -p build/Payload
+          cp -R build/DerivedData/Build/Products/Release-iphoneos/Kebiao.app build/Payload/
+          cd build
+          ditto -c -k --sequesterRsrc --keepParent Payload cqie-schedule-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cqie-schedule-unsigned-ipa
+          path: build/cqie-schedule-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
